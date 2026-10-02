@@ -4,6 +4,57 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.84.0 — selective lore discovery
+
+Ask ordinary questions such as **“What factions could plausibly have connections
+to this situation?”** Selective lore discovery is on by default in the gear
+settings. It takes priority over the older full-book injection switch. Turn it
+off to use the legacy catalog/full-text modes.
+
+The extension loads the chosen books into a **local, per-request search index**.
+It sends only a small page of matching titles, keys, and explicitly clipped
+previews. The assistant can search again with names or aliases, fetch selected
+entries, and follow relationships into other entries. It is instructed to cite
+`WB[book#uid]` and separate **[CANON]**, **[INFERENCE]**, and **[PROPOSAL]**. These
+are model instructions, not an automatic fact checker.
+
+- The manual book-name list takes precedence. Otherwise discovery combines
+  global selections, the chat binding, primary character/group-member bindings,
+  and the persona binding. Extra character bindings are included when the host
+  exposes `charLore`; on builds that do not expose it, enter those book names in
+  the manual list. This does not emulate or modify the storyteller's activation
+  rules, probabilities, or recursive injection.
+- Search is local lexical matching over titles, primary/secondary keys, and
+  bodies, with title/key weighting and rarer terms weighted higher. It requires
+  no embedding service. Related concepts without shared words may need another
+  query; a no-match result is not proof of absence. Disabled entries are excluded
+  from normal search, and explicitly fetched disabled entries are labeled.
+- `<wisearch>{"query":"harbour factions","offset":0}</wisearch>` returns up to
+  12 candidates and a `nextOffset` for pagination. An empty query browses titles.
+  Previews are unquotable hints; the assistant must fetch before citing or editing.
+- `<wifetch>["Terranovia#17","Terranovia#42@2"]</wifetch>` retrieves selected
+  text. Long entries use 6,000-character parts with exact counts and an
+  **INCOMPLETE** marker. At most 10 references are considered per fetch, with a
+  24,000-character response cap and a 48,000-character retrieval budget per run.
+  Limits and undelivered references are reported; repeated parts are not resent.
+- Discovery allows at least four follow-up rounds (five assistant rounds total
+  at default settings), bounded by the existing fetch loop. Existing transport
+  retries can add provider calls. Exhaustion produces an explicit incomplete
+  status rather than presenting a tool request as an answer. Scope is ordinary
+  assistant chat/regeneration; the separate Director and deep-audit flows retain
+  their existing context behavior.
+- No persistent index: each run reloads current books, so edits and book changes
+  take effect on the next request. Stop/chat-change checks bracket index loading
+  and model calls. Discovery itself does not save or activate any entries; the
+  existing proposal/Apply/Undo editing workflow remains in place.
+
+Validation includes a synthetic 294-entry book measuring 1,604,763 serialized
+characters. The tested faction → guild lookup accumulated 1,157 characters of
+lore results across its requests. This demonstrates selective transport for
+that fixture, not a prediction for every question or a test of the user's actual
+Terranovia book. Desktop Chrome and mobile touch emulation also exercised an
+ordinary lore question, fetch, cited response, and zero World Info writes.
+
 ## v2.83.2 — restore the full extension and repair menu opening
 
 Replaces the diagnostic-only v2.83.1 with the complete extension from commit
@@ -216,7 +267,7 @@ ST-Copilot is a broad chat manager (sessions, themes, stats, and more). Chat Ass
 1. Install as a SillyTavern extension: **Extensions -> Install extension**, paste this repo's Git URL.
 2. Open the panel: wand menu -> **Chat Assistant**, or the `/cc` slash command.
 3. In the gear settings, pick a **Connection Profile** for the assistant (separate from your roleplay model) — required for it to run.
-4. Optional: enable the Director / Editor cadence, turn on the Worldbook bridge, tune the numbers.
+4. Optional: enable the Director / Editor cadence, choose lorebook discovery or legacy injection in Settings, and tune the numbers.
 
 ## Notes
 
