@@ -38,6 +38,8 @@ const mobilePanelCss = panelCss.match(/@media \(max-width: 550px\)\s*\{\s*#chata
 ok(/top:\s*28dvh/.test(mobilePanelCss) && /bottom:\s*auto/.test(mobilePanelCss), 'mobile panel anchors from viewport top, not collapsed root bottom');
 ok(/height:\s*72dvh/.test(mobilePanelCss) && /min-height:\s*0/.test(mobilePanelCss), 'mobile panel fits dynamic and short viewports');
 
+ok(/#chatassist_campaign\s*\{[^}]*flex:\s*0\s+0\s+auto/.test(panelCss), 'campaign row cannot flex-shrink out of view with long session history');
+
 // ── Forgiving DOM mock ───────────────────────────────────────────────
 // Every element supports the operations the panel builder uses; children are
 // tracked so querySelector/getElementById can find what init created.
