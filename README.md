@@ -4,6 +4,36 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.83.2 — restore the full extension and repair menu opening
+
+Replaces the diagnostic-only v2.83.1 with the complete extension from commit
+`19930328aae9a021f0e60cf241aeb8a681121ef2`, preserving settings and per-chat data
+under `continuityCopilot`. The display name is **Chat Assistant**.
+
+The wand item follows SillyTavern's built-in caption menu pattern: an
+`extension_container`, the native icon class, and a jQuery `click` handler.
+Clicks bubble to SillyTavern's menu closer; there is no separate `touchend`
+handler that cancels the browser's click. Menu activation opens the panel
+idempotently, so a repeated/compatibility click cannot immediately close it.
+Enter and Space also open it. A missing menu leaves initialization retryable.
+
+The restored build also had a concrete DOM mismatch: its panel and viewer
+were created as `cc_*`, while lookups and CSS expected `chatassist_*`.
+Creation now matches those lookups. Storage keys and CSS classes are unchanged.
+The integrity harness now targets the actual namespaced DOM IDs rather than
+the stale IDs from before the earlier migration.
+
+Reference: SillyTavern's [caption menu registration](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/public/scripts/extensions/caption/index.js)
+and [wand menu click handling](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/public/scripts/extensions.js).
+
+Validation: `node load_test.mjs`, plus headless Chrome with real jQuery and the
+full extension/CSS at desktop size and a 412×915 mobile touch viewport. Checked
+label/icon activation, jQuery-triggered clicks, repeated opening, keyboard
+activation, menu dismissal, and panel closing. The browser fixture mocks the
+SillyTavern context; it is not a full running SillyTavern installation or a
+physical Samsung A32. The diagnostic's phone-specific failure is not reproduced
+or conclusively attributed by these tests.
+
 ## The one-line idea
 
 Instead of hand-editing your chat log and juggling separate tools for memory and worldbook, you get **one assistant that sees all your story data at once and edits it surgically** — with a red/green diff preview, fuzzy matching so it doesn't have to quote perfectly, and one-click Undo for everything. Keeping those stores mutually consistent is the whole point.

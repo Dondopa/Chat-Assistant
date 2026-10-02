@@ -1,12 +1,12 @@
 {
-    "display_name": "Chat Assistant DIAGNOSTIC",
+    "display_name": "Chat Assistant",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "brucestarkallen",
-    "version": "2.83.1",
+    "version": "2.83.0",
     "homePage": "https://github.com/Dondopa/Chat-Assistant",
     "auto_update": false
 }

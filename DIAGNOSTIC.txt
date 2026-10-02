@@ -1,1 +1,0 @@
-Diagnostic build: tests only SillyTavern extension load -> Extensions menu -> popup panel.
