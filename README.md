@@ -4,6 +4,26 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.84.2 — mobile panel positioned inside the screen
+
+Fixes an opening failure reproduced against a real SillyTavern installation in
+mobile Chrome emulation: the menu click set the open flag, but the panel occupied
+`y=-532.8..0` at a 384×740 viewport. SillyTavern transforms its HTML root and fixes
+the body on mobile, leaving a zero-height containing block for fixed descendants.
+Our mobile `bottom: 0` placed the entire panel above the screen. Desktop mode
+used a top anchor and therefore worked.
+
+The mobile panel now uses a viewport-relative top anchor and dynamic viewport
+height, with a `vh` fallback. Its minimum size no longer overflows short phone
+viewports. Menu/slash wiring and the full assistant functionality are unchanged.
+Fullscreen retains its existing top anchor. No diagnostic-only build is shipped.
+
+Architecture invariant: mobile panel coordinates must not depend on the height
+of SillyTavern's transformed root. `mobile_layout_test.mjs` reproduces that host
+layout and checks visible, hittable windowed/fullscreen panels at five viewport
+sizes. Run it with Playwright installed and `CHROME_PATH` set if needed. The
+required `node load_test.mjs` gate also guards the mobile CSS anchors.
+
 ## v2.84.1 — lore generation continuation and incomplete-output handling
 
 Fixes the generation path used after `wisearch`/`wifetch`, without changing lore
