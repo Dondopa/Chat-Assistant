@@ -4,6 +4,90 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.0 — provenance-aware Campaign Ledger
+
+Open **Campaign Ledger** inside Chat Assistant. **Audit new RP** initially scans
+up to the last 50 visible RP messages; subsequent audits resume at the saved
+message index. Each audit sends at most 24,000 characters of complete RP messages
+in one extraction generation (8,192 output-token limit; the existing transport may retry once without streaming if stream startup fails). It never uses Chat Assistant session
+history, Director plans, or lorebook bodies as extraction evidence. Stop, chat
+switches, source edits during extraction, invalid JSON, unsupported quotes and
+reported incomplete generations discard the batch without moving the cursor.
+A valid empty records array is a successful audit. Messages larger than the input
+budget stop the audit explicitly rather than being silently skipped or clipped.
+
+Records begin **pending**. Review their type, provenance, exact supporting quote,
+RP message index, speaker and available timestamp, then **Accept** or **Reject**.
+Only accepted records with an unchanged source can enter assistant context.
+Reject retains a tombstone so exact duplicates are not immediately re-added.
+**Re-audit from…** lets you scan an earlier range (0 starts again); decisions and
+records are preserved, and subsequent audits continue from that batch. Search
+by name, fact, type or status to view older records; the UI renders at most the
+20 newest matches. This release offers rejection/re-audit, not freeform editing
+of evidence or a destructive one-click rebuild.
+
+### Evidence and storage
+
+The versioned ledger lives at
+`chatMetadata.continuityCopilot.campaignLedger`, shared by assistant sessions
+within that RP chat, and saved through the existing metadata persistence API.
+Each record has a chat-local ID, type, subject, fact/claim, related names, status,
+confidence/review state, creation time, source index/speaker/timestamp/quote and
+source fingerprint. Editing, swiping, hiding, deleting or reordering its source
+makes a record stale and excludes it from retrieval. Re-audit the affected range
+to extract a replacement. Chat branches that inherit metadata can inherit valid
+prior evidence; separate chats do not share a global ledger.
+
+Supported types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE,
+RELATIONSHIP, UNRESOLVED_CLAIM. An entity mentioned only in dialogue has
+**DIALOGUE REFERENCE** provenance; it does not prove the character exists or that
+claims about them are true. Dialogue cannot be promoted to objective campaign
+facts by a model type label, including quoted excerpts stripped of enclosing
+quotation marks. Unresolved assertions remain **UNRESOLVED CLAIM**, not canon.
+Narration/action can produce **CAMPAIGN CANON**, subject to human review.
+
+Analyst instructions distinguish **[WORLD CANON]**, **[CAMPAIGN CANON]**,
+**[NPC CLAIM]**, **[INFERENCE]**, and **[PROPOSAL]**. Selecting a possible future,
+inventing motives/relationships or deciding that an NPC acts is a proposal, not
+inference. Earlier Chat Assistant brainstorming is never canon evidence. Model
+classification is fallible: exact-quote validation proves the text exists, not
+that an interpretation is correct; review remains essential, particularly for
+unmarked dialogue, unreliable narration and OOC text in RP messages.
+
+### Retrieval and lore checking
+
+Ordinary assistant questions select accepted records by keywords in the current
+question, weighting entity/related names above fact text and preferring recent
+records for ties. At most **12 records / 6,000 characters** are added, with no
+clipped records and no unrelated or stale records. Whole-ledger injection is
+excluded by the existing memory reader. Empty/no-match queries add nothing;
+mention relevant names for better recall. Matching is lexical, not semantic;
+exact normalized source/type/subject/fact duplicates are suppressed, but
+paraphrases and renamed entities may need manual rejection. No embeddings,
+external database, background extraction, or automatic storyteller injection.
+Source fingerprints are cached within each retrieval to avoid rehashing the
+same RP message for each candidate. The existing consistency scan includes
+accepted campaign facts and directs corrections back to review/re-audit.
+
+Optional **Check entity names in lore** reuses `wiCreateDiscovery` and
+`wiLoreSearch`, checking up to 10 new-entity candidates locally and retaining up
+to three matching refs each. Matches are explicitly **not verified support**;
+no match is not proof of absence. Existing lore discovery still performs its
+normal bounded search/fetch flow for substantive world-canon analysis. The
+ledger never calls World Info save or promotes anything to lore automatically.
+Record/source/lore fields leave room for a future explicit promotion workflow.
+
+### Validation
+
+`node load_test.mjs` covers extraction, dialogue/narration distinctions, entity
+references, state changes, source quotes, review, duplicates, incremental scans,
+serialization, per-chat isolation, source drift, empty/malformed/truncated output,
+context limits and reuse of lore search without writes. Existing lore and mobile
+opening guards remain in the same gate. `mobile_layout_test.mjs` checks the
+confirmed transformed-root mobile layout; browser UI checks also exercise audit,
+accept and reject at mobile and desktop widths. The 2.84.2 mobile positioning
+rules and existing Director/session flows are preserved.
+
 ## v2.84.2 — mobile panel positioned inside the screen
 
 Fixes an opening failure reproduced against a real SillyTavern installation in
