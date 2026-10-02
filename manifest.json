@@ -1,0 +1,12 @@
+{
+    "display_name": "Chat Assistant (Dondopa Mobile Fix)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "brucestarkallen",
+    "version": "2.83.0-dondopa1",
+    "homePage": "https://github.com/brucestarkallen/SillyTavern-Chat-Assistant",
+    "auto_update": false
+}
