@@ -1,6 +1,6 @@
 /* Continuity Copilot — panel styled with SillyTavern theme variables */
 
-#chatassist_panel {
+#cc_panel {
     position: fixed;
     top: 60px;
     right: 12px;
@@ -24,13 +24,13 @@
     font-size: 0.95em;
 }
 
-#chatassist_panel.cc_open {
+#cc_panel.cc_open {
     display: flex;
 }
 
 /* Fullscreen focus mode — fills the viewport; the header (with the X + the
    restore toggle) stays pinned at the top so you can always get back out. */
-#chatassist_panel.cc_fullscreen {
+#cc_panel.cc_fullscreen {
     top: 0;
     left: 0;
     right: 0;
@@ -51,7 +51,7 @@
     z-index: 100000;
 }
 
-#chatassist_panel.cc_fullscreen #chatassist_header {
+#cc_panel.cc_fullscreen #cc_header {
     position: sticky;
     top: 0;
     z-index: 5;
@@ -64,7 +64,7 @@
     padding-left: calc(10px + env(safe-area-inset-left, 0px));
 }
 
-#chatassist_header {
+#cc_header {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -76,12 +76,12 @@
     flex: 0 0 auto;
 }
 
-#chatassist_header .cc_title {
+#cc_header .cc_title {
     font-weight: 600;
     flex: 0 0 auto;
 }
 
-#chatassist_header .cc_sub {
+#cc_header .cc_sub {
     opacity: 0.65;
     font-size: 0.85em;
     flex: 1 1 auto;
@@ -90,19 +90,19 @@
     white-space: nowrap;
 }
 
-#chatassist_header .cc_hbtn {
+#cc_header .cc_hbtn {
     cursor: pointer;
     opacity: 0.75;
     padding: 2px 6px;
     flex: 0 0 auto;
 }
 
-#chatassist_header .cc_hbtn:hover {
+#cc_header .cc_hbtn:hover {
     opacity: 1;
 }
 
 /* Settings drawer */
-#chatassist_settings {
+#cc_settings {
     display: none;
     flex: 0 0 auto;
     max-height: 45%;
@@ -111,21 +111,21 @@
     border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
 }
 
-#chatassist_settings.cc_open {
+#cc_settings.cc_open {
     display: block;
 }
 
-#chatassist_settings label {
+#cc_settings label {
     display: block;
     margin: 6px 0 2px;
     font-size: 0.85em;
     opacity: 0.85;
 }
 
-#chatassist_settings input[type="text"],
-#chatassist_settings input[type="number"],
-#chatassist_settings select,
-#chatassist_settings textarea {
+#cc_settings input[type="text"],
+#cc_settings input[type="number"],
+#cc_settings select,
+#cc_settings textarea {
     width: 100%;
     box-sizing: border-box;
     background-color: rgba(0, 0, 0, 0.25);
@@ -136,22 +136,22 @@
     font-size: 0.9em;
 }
 
-#chatassist_settings textarea {
+#cc_settings textarea {
     min-height: 90px;
     resize: vertical;
     font-family: monospace;
 }
 
-#chatassist_settings .cc_row {
+#cc_settings .cc_row {
     display: flex;
     gap: 8px;
 }
 
-#chatassist_settings .cc_row > div {
+#cc_settings .cc_row > div {
     flex: 1 1 0;
 }
 
-#chatassist_settings .cc_check {
+#cc_settings .cc_check {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -160,7 +160,7 @@
 }
 
 /* Chat log */
-#chatassist_log {
+#cc_log {
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 8px 10px;
@@ -208,7 +208,7 @@
 }
 
 /* Proposed edit cards */
-#chatassist_edits {
+#cc_edits {
     flex: 0 0 auto;
     max-height: 55%;
     overflow-y: auto;
@@ -217,11 +217,11 @@
     display: none;
 }
 
-#chatassist_edits.cc_open {
+#cc_edits.cc_open {
     display: block;
 }
 
-#chatassist_edits .cc_edits_head {
+#cc_edits .cc_edits_head {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -229,7 +229,7 @@
     font-size: 0.85em;
 }
 
-#chatassist_edits .cc_edits_head span {
+#cc_edits .cc_edits_head span {
     flex: 1 1 auto;
     opacity: 0.8;
 }
@@ -290,13 +290,13 @@
 }
 
 /* Composer */
-#chatassist_composer {
+#cc_composer {
     flex: 0 0 auto;
     border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
     padding: 6px 10px 8px;
 }
 
-#chatassist_quick {
+#cc_quick {
     display: flex;
     gap: 6px;
     margin-bottom: 6px;
@@ -329,13 +329,13 @@
     cursor: not-allowed;
 }
 
-#chatassist_inputrow {
+#cc_inputrow {
     display: flex;
     gap: 6px;
     align-items: flex-end;
 }
 
-#chatassist_input {
+#cc_input {
     flex: 1 1 auto;
     min-height: 38px;
     max-height: 140px;
@@ -350,12 +350,12 @@
 }
 
 /* Wand menu entry */
-#chatassist_menu_item {
+#cc_menu_item {
     cursor: pointer;
 }
 
 @media (max-width: 550px) {
-    #chatassist_panel {
+    #cc_panel {
         top: auto;
         bottom: 0;
         right: 0;
