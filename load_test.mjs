@@ -31,6 +31,13 @@ const ok = (cond, label) => {
     else { fail++; console.log('  ✗ ' + label); }
 };
 
+// CSS witness for the real-browser regression in mobile_layout_test.mjs.
+// A bottom anchor resolves against ST's transformed zero-height HTML root.
+const panelCss = readFileSync(join(HERE, 'style.css'), 'utf8');
+const mobilePanelCss = panelCss.match(/@media \(max-width: 550px\)\s*\{\s*#chatassist_panel\s*\{([^}]+)/)?.[1] || '';
+ok(/top:\s*28dvh/.test(mobilePanelCss) && /bottom:\s*auto/.test(mobilePanelCss), 'mobile panel anchors from viewport top, not collapsed root bottom');
+ok(/height:\s*72dvh/.test(mobilePanelCss) && /min-height:\s*0/.test(mobilePanelCss), 'mobile panel fits dynamic and short viewports');
+
 // ── Forgiving DOM mock ───────────────────────────────────────────────
 // Every element supports the operations the panel builder uses; children are
 // tracked so querySelector/getElementById can find what init created.
