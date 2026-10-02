@@ -397,3 +397,11 @@
     max-height: 220px;
     overflow-y: auto;
 }
+
+/* Compact, separately scrollable campaign review; mobile opening anchors stay above. */
+#chatassist_campaign { flex: 0 1 auto; overflow: auto; max-height: 45%; padding: 6px 10px; border-bottom: 1px solid var(--SmartThemeBorderColor, #555); }
+#chatassist_campaign summary { cursor: pointer; }
+.cc_campaign_controls { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
+#chatassist_campaign_query { width: 100%; min-width: 0; }
+.cc_campaign_record { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 0; border-top: 1px solid var(--SmartThemeBorderColor, #555); }
+.cc_campaign_record button { margin: 6px 6px 0 0; }
