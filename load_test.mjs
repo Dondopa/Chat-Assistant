@@ -300,6 +300,9 @@ ok(SRC.includes('if (concluded) onEpisodeConcluded(chatAt).catch('), 'status-che
 ok(!SRC.includes('maybeAutoDirector(); // auto mode: chain the next episode immediately'), 'no conclusion path bypasses the editor by auto-directing directly');
 // Live-settings proof: init actually installed the new default and flag.
 const CA = ctx.extensionSettings['continuityCopilot'] || {};
+// Legacy scenarios exercise their original injection mode; discovery has dedicated tests below.
+CA.wiDiscovery = false;
+document.getElementById('chatassist_wi_discovery').checked = false;
 ok(CA.critiqueOnEpisode === true, 'live settings after init: critiqueOnEpisode is true');
 ok(typeof CA.directorPrompt === 'string' && CA.directorPrompt.includes('CRAFT \u2014 the difference between competent and masterpiece'), 'live settings after init: director prompt is the CRAFT default');
 ok(typeof CA.directorPrompt === 'string' && CA.directorPrompt.includes('CAST \u2014 before writing beats'), 'live settings after init: director prompt carries the CAST law');
@@ -2324,6 +2327,104 @@ ok(/PENDING PROPOSALS/.test(aSeen['4'] || '') && /clean up after the earlier pas
 ok(/VANORIGINAL-A/.test(aSeen['4'] || '') && /VANORIGINAL-B/.test(aSeen['4'] || ''), 'the ghosted originals are served beside it');
 ok(!!pass4Label && /the assistant withdrew/i.test(ccLogText().slice(aStart).join('\n')), 'the refuted conviction is withdrawn inside the same audit run — never a live card for the user');
 delete ctx.chatMetadata.summaryception;
+
+console.log('== v2.84.0 selective lore discovery ==');
+// Execute the production discovery helpers directly for budget/selection edge cases.
+const loreSource = SRC.slice(SRC.indexOf('    const LORE_RULES ='), SRC.indexOf('    async function wiBuildContext()'));
+let loreContext = { characters: [], powerUserSettings: {} }, manualBooks = [], discovered = { globals: [], chat: null, character: null };
+let loreSame = true;
+const loreApi = new Function('ctx', 'window', 'wiChosenBooks', 'wiDiscover', 'wiLoad', 'wiEntryList', 'sameChat', 'stopRequested', 'findBlock', loreSource + '\nreturn {wiDiscoveryBooks, wiCreateDiscovery, wiLoreSearch, wiLoreFetch, wiDiscoveryRequest, LORE_RULES};')(
+    () => loreContext, {}, () => manualBooks, () => discovered, async book => wiStore.get(book), data => Object.values(data.entries), () => loreSame, false,
+    (text, tag) => { const match = text.match(new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>')); return match ? { inner: match[1] } : null; });
+discovered = { globals: ['Global', 'Shared'], chat: 'Chat', character: 'Character' };
+loreContext.powerUserSettings.persona_description_lorebook = 'Persona';
+ok(loreApi.wiDiscoveryBooks().join(',') === 'Global,Shared,Chat,Character,Persona', 'discovery includes global, chat, character and persona bindings');
+manualBooks = ['Terranovia', 'Terranovia'];
+ok(loreApi.wiDiscoveryBooks().join(',') === 'Terranovia', 'manual selection overrides active books and deduplicates');
+manualBooks = [];
+loreContext.groupId = 'group'; loreContext.groups = [{ id: 'group', members: ['a.png'] }];
+loreContext.characters = [{ avatar: 'a.png', data: { extensions: { world: 'MemberBook' } } }];
+loreContext.worldInfo = { charLore: [{ name: 'a', extraBooks: ['ExtraBook', 'Shared'] }] };
+ok(loreApi.wiDiscoveryBooks().includes('MemberBook') && loreApi.wiDiscoveryBooks().includes('ExtraBook') && loreApi.wiDiscoveryBooks().filter(x => x === 'Shared').length === 1, 'group and exposed extra bindings are included once');
+manualBooks = ['MissingBook'];
+const failedIndex = await loreApi.wiCreateDiscovery('lore-chat');
+ok(loreApi.wiLoreSearch(failedIndex, {query:''}).includes('MissingBook'), 'unavailable books are named rather than silently treated as empty');
+manualBooks = ['Terranovia'];
+const hugeLore = { entries: {} };
+for (let i = 0; i < 294; i++) hugeLore.entries[i] = { uid: i, comment: 'Local record ' + i, key: ['record' + i], content: ('Unrelated record ' + i + '. ').repeat(250) };
+hugeLore.entries[0] = { uid: 0, comment: 'Azure Compact faction', key: ['harbour', 'Compact'], content: 'CANON-A: The Azure Compact funds the Lantern Guild through harbour dues.' };
+hugeLore.entries[1] = { uid: 1, comment: 'Lantern Guild', key: ['Lantern'], content: 'CANON-B: The Lantern Guild maintains the eastern observatory.' };
+hugeLore.entries[2] = { uid: 2, comment: 'Forbidden faction', disable: true, content: 'DISABLED-SECRET' };
+hugeLore.entries[3] = { uid: 3, comment: 'Long chronicle', content: 'START-' + 'x'.repeat(12000) + '-TAIL' };
+wiStore.set('Terranovia', hugeLore);
+let loreState = await loreApi.wiCreateDiscovery('lore-chat');
+const initialSearch = loreApi.wiLoreSearch(loreState, { query: 'What factions have harbour connections?' });
+ok(initialSearch.includes('Terranovia#0') && !initialSearch.includes('DISABLED-SECRET'), 'lexical discovery ranks the faction and excludes disabled lore');
+ok(initialSearch.length < 8000 && !initialSearch.includes('record293'), 'large book produces a bounded candidate index, not all entry bodies');
+const noMatch = loreApi.wiLoreSearch(loreState, { query: 'zzzznonexistent' });
+ok(noMatch.includes('"matches":0') && noMatch.includes('No results'), 'no-match searches are explicit');
+const page1 = loreApi.wiLoreSearch(loreState, { query: '' });
+const page2 = loreApi.wiLoreSearch(loreState, { query: '', offset: 12 });
+ok(page1.includes('"nextOffset":12') && page2.includes('"offset":12'), 'browse index paginates instead of dumping all entries');
+const first = loreApi.wiLoreFetch(loreState, ['Terranovia#3']);
+const last = loreApi.wiLoreFetch(loreState, ['Terranovia#3@3']);
+ok(first.includes('PART 1 OF 3') && first.includes('INCOMPLETE') && !first.includes('-TAIL'), 'oversized entry is honestly marked incomplete');
+ok(last.includes('PART 3 OF 3') && last.includes('-TAIL'), 'last part remains retrievable with exact tail');
+ok(loreApi.wiLoreFetch(loreState, ['Terranovia#3']).includes('ALREADY SERVED'), 'duplicate fetch does not spend budget on the same body again');
+ok(loreApi.wiLoreFetch(loreState, ['Terranovia#3@99']).includes('PART ERROR'), 'invalid part gets an explicit error');
+ok(loreApi.wiLoreFetch(loreState, ['Other#0']).includes('LORE MISSING'), 'fetch cannot read outside the selected books');
+ok(loreApi.wiLoreFetch(loreState, ['Terranovia#2']).includes('DISABLED — not active canon'), 'explicit disabled-entry inspection never silently promotes it to canon');
+hugeLore.entries[1].content += ' NEWLY-EDITED';
+const freshIndex = await loreApi.wiCreateDiscovery('lore-chat');
+ok(loreApi.wiLoreFetch(freshIndex, ['Terranovia#1']).includes('NEWLY-EDITED'), 'each request reloads lore so saved edits do not leave a stale index');
+const overflowState = await loreApi.wiCreateDiscovery('lore-chat');
+const manyRefs = Array.from({length: 20}, (_, i) => 'Terranovia#' + (i + 4));
+const boundedFetch = loreApi.wiLoreFetch(overflowState, manyRefs);
+ok(boundedFetch.length <= 24000 && boundedFetch.includes('NOT SERVED') && boundedFetch.includes('Terranovia#23'), 'fetch cap names omitted refs and bounds payload');
+let totalLoreChars = 0;
+const budgetState = await loreApi.wiCreateDiscovery('lore-chat');
+for (let i = 4; i < 30; i++) { const output = loreApi.wiLoreFetch(budgetState, ['Terranovia#' + i]); if (output.includes('WB[')) totalLoreChars += output.length; }
+ok(budgetState.remaining >= 0 && totalLoreChars <= 48000, 'per-request lore budget holds across repeated fetches');
+const tiny = await loreApi.wiCreateDiscovery('lore-chat'); tiny.remaining = 50;
+loreApi.wiLoreFetch(tiny, ['Terranovia#0']);
+ok(tiny.served.size === 0, 'an undelivered entry is never marked as read');
+loreSame = false;
+ok(await loreApi.wiCreateDiscovery('old-chat') === null, 'chat change aborts index construction'); loreSame = true;
+ok(!!loreApi.wiDiscoveryRequest('<wisearch>broken</wisearch>').error, 'malformed search gets actionable feedback');
+ok(loreApi.LORE_RULES.includes('[CANON]') && loreApi.LORE_RULES.includes('[INFERENCE]') && loreApi.LORE_RULES.includes('[PROPOSAL]'), 'canon, inference and proposal labels are explicitly required');
+
+// Drive the actual send loop: initial search -> read -> relationship search -> read -> answer.
+CA.wiDiscovery = true; CA.wiEnable = true; CA.wiFull = true; CA.wiBooks = 'Terranovia'; CA.fetchRounds = 3;
+CA.profileId = 'gate-profile'; CA.streaming = false;
+ctx.chatMetadata['continuityCopilot'] = {};
+ctx.chat.length = 0; ctx.chat.push({ is_user: false, mes: 'We have reached the harbour.' });
+const loreCalls = [];
+ctx.ConnectionManagerRequestService = { sendRequest: async (_p, messages) => {
+    loreCalls.push(messages.map(m => ({ ...m })));
+    return ['<wifetch>["Terranovia#0"]</wifetch>', '<wisearch>{"query":"Lantern"}</wisearch>', '<wifetch>["Terranovia#1"]</wifetch>', '[CANON] The Compact funds the Guild WB[Terranovia#0]. [INFERENCE] The observatory may connect them WB[Terranovia#1]. [PROPOSAL] Meet a Guild envoy.'][loreCalls.length - 1];
+} };
+document.getElementById('chatassist_input').value = 'What factions have harbour connections?'; clickFresh('chatassist_send'); await sleep(1000);
+const payload = n => loreCalls[n]?.map(m => m.content).join('\n') || '';
+ok(loreCalls.length === 4, 'real send loop follows relationships across search and fetch calls');
+ok(!payload(0).includes('Unrelated record 293.') && payload(0).includes('LORE DISCOVERY'), 'selective mode overrides legacy full-book injection');
+ok(payload(1).includes('CANON-A:') && payload(1).includes('COMPLETE'), 'first selected entry is served with completeness metadata');
+ok(payload(3).includes('CANON-B:') && ccLogText().some(t => t.includes('Meet a Guild envoy')), 'related entry reaches the model and final answer reaches the panel');
+const maxLorePayload = Math.max(...loreCalls.map(ms => ms.filter(m => /LORE SEARCH|^WB\[/.test(m.content)).reduce((n, m) => n + m.content.length, 0)));
+console.log('  measured: synthetic book characters=' + JSON.stringify(hugeLore).length + ', largest accumulated lore payload=' + maxLorePayload);
+ok(maxLorePayload < 48000, 'integrated lore payload stays under the configured bound');
+// Search on the last call must terminate honestly, never display a tool block as an answer.
+let exhaustedCalls = 0;
+ctx.ConnectionManagerRequestService = { sendRequest: async () => { exhaustedCalls++; return '<wisearch>{"query":"harbour"}</wisearch>'; } };
+document.getElementById('chatassist_input').value = 'Keep searching'; clickFresh('chatassist_send'); await sleep(900);
+ok(exhaustedCalls === 5 && ccLogText().some(t => /Lore discovery reached its call limit/.test(t)), 'tool loop has a finite call limit and honest exhaustion message');
+// Stop while loading the local index must spend zero model calls.
+const oldLoreLoad = ctx.loadWorldInfo; let cancelledCalls = 0;
+ctx.ConnectionManagerRequestService = { sendRequest: async () => { cancelledCalls++; return 'UNEXPECTED'; } };
+ctx.loadWorldInfo = async book => { clickFresh('chatassist_send'); return oldLoreLoad(book); };
+document.getElementById('chatassist_input').value = 'Read lore'; clickFresh('chatassist_send'); await sleep(300);
+ctx.loadWorldInfo = oldLoreLoad;
+ok(cancelledCalls === 0, 'Stop during local indexing sends no model request');
+CA.wiDiscovery = false; CA.wiEnable = false; CA.wiFull = false;
 
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
