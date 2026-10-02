@@ -4,6 +4,58 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.84.1 — lore generation continuation and incomplete-output handling
+
+Fixes the generation path used after `wisearch`/`wifetch`, without changing lore
+retrieval limits. The previous fallback call omitted `responseLength`, so
+SillyTavern used its global response length instead of Chat Assistant's configured
+output budget. Each request now explicitly receives its own budget, including
+recovery requests. Tool rounds were not subtracting from a shared output-token
+pool; the omitted fallback argument was a separate generation-budget bug.
+
+The transport now retains answer text, structured reasoning, finish reason, and
+usage when exposed. Non-streaming Connection Profile calls request raw data;
+the current-connection fallback prefers `generateRawData` where available,
+avoiding `generateRaw` cleanup that throws **No message generated** when the
+extracted answer is empty. Older hosts using `generateRaw` still receive the
+output budget and get bounded recovery for that error. Unknown response objects
+are no longer stringified and displayed as if their JSON were an answer.
+
+SillyTavern's cumulative stream snapshots replace the previous snapshot rather
+than appending a revised answer to it. Legacy delta chunks remain supported.
+Interrupted streams retain their partial output and real error; nested provider
+errors retain their cause instead of only showing “API request failed.”
+
+Lore rounds explicitly check empty output, provider-reported token truncation,
+unclosed lore tool blocks, and short prose ending in a dangling colon (including
+the reported Veracruz lead-in). An unusable generation gets **one complete-response
+recovery** with a fresh enlarged output budget, capped at 32,768 tokens. This is
+in addition to the existing configured reasoning-only recovery. Successful
+recovery resumes the same search/fetch flow. Persistent failure retains the
+partial output as an **INCOMPLETE note**, with backend, requested budget and
+available stop reason; it is neither stored as a completed assistant answer nor
+passed to edit ingestion. Authentication/context/provider rejection errors are
+surfaced, not automatically retried as empty answers. Stop prevents recovery.
+
+Some SillyTavern stream adapters omit finish reasons; diagnostics say so. The
+short lead-in check is a heuristic, not proof that arbitrary prose is complete.
+The user's original provider trace was not available, so the exact provider
+termination behind those two observed attempts cannot be asserted. The missing
+budget, discarded reasoning/metadata, and silent acceptance of incomplete output
+were reproduced against v2.84.0 and corrected.
+
+Compatibility references: SillyTavern [`generateRaw` / `generateRawData`](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/public/script.js),
+[Connection Profile requests](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/public/scripts/extensions/shared.js), and
+[structured/streaming response contracts](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/public/scripts/custom-request.js).
+
+Validation covers search → continuation; search → fetch → synthesis; empty and
+reasoning-only generations; legacy fallback exceptions; explicit token-limit
+finishes; the exact dangling lead-in; malformed intermediate JSON/markup;
+provider errors; cumulative/revised/interrupted streams; and Stop during recovery.
+Desktop and mobile-touch browser fixtures also exercise empty-response recovery
+followed by truncated-synthesis recovery, ending in a complete answer with zero
+World Info writes. These use mocked provider responses, not a live user's model.
+
 ## v2.84.0 — selective lore discovery
 
 Ask ordinary questions such as **“What factions could plausibly have connections

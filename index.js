@@ -1298,7 +1298,10 @@
     function wiDiscoveryRequest(reply) {
         for (const tag of ['wisearch', 'wifetch']) {
             const block = findBlock(reply, tag);
-            if (!block) continue;
+            if (!block) {
+                if (String(reply).toLowerCase().includes('<' + tag)) return { error: 'Unclosed or malformed ' + tag + ' block; resend one complete JSON tool block.' };
+                continue;
+            }
             try {
                 const value = JSON.parse(block.inner.trim());
                 if (tag === 'wisearch' && value && typeof value === 'object' && !Array.isArray(value) && typeof value.query === 'string') return { tag, value };
@@ -2145,15 +2148,43 @@
         } catch (e) { return []; }
     }
 
-    function extractText(res) {
-        if (res == null) return '';
-        if (typeof res === 'string') return res;
-        if (typeof res.content === 'string') return res.content;
-        if (Array.isArray(res.content)) {
-            return res.content.map(p => (typeof p === 'string' ? p : (p?.text || ''))).join('');
+    function generationErrorMessage(error) {
+        const parts = [], seen = new Set();
+        for (let e = error; e && !seen.has(e) && parts.length < 5; e = e.cause) {
+            seen.add(e);
+            const message = String(e.message || e);
+            if (!parts.includes(message)) parts.push(message);
         }
-        if (typeof res.text === 'string') return res.text;
-        try { return JSON.stringify(res); } catch (e) { return String(res); }
+        return parts.join(' → ');
+    }
+
+    function normalizeGeneration(res, meta = {}) {
+        const partsText = parts => Array.isArray(parts) ? parts.filter(p => !p?.thought && p?.type !== 'thinking' && p?.type !== 'reasoning')
+            .map(p => typeof p === 'string' ? p : typeof p?.text === 'string' ? p.text : '').join('') : typeof parts === 'string' ? parts : '';
+        if (res?.error) throw new Error(String(res.error.message || res.error));
+        const choice = res?.choices?.[0], candidate = res?.candidates?.[0];
+        let text = typeof res === 'string' ? res : partsText(res?.content) || partsText(choice?.message?.content)
+            || partsText(res?.message?.content) || partsText(candidate?.content?.parts)
+            || (typeof res?.text === 'string' ? res.text : '') || choice?.text || res?.results?.[0]?.text
+            || res?.output_text || res?.generation || res?.response || '';
+        if (!text && Array.isArray(res?.output)) text = res.output.filter(p => p.type === 'message').map(p => partsText(p.content)).join('');
+        // Hosts may expose additional current-backend formats. Never turn an unknown
+        // object (or finish metadata) into a JSON "answer".
+        if (!text && meta.backend === 'current connection' && typeof ctx().extractMessageFromData === 'function') {
+            try { text = ctx().extractMessageFromData(res) || ''; } catch (_) { /* handled as empty below */ }
+        }
+        const reasoning = res?.reasoning || res?.reasoning_content || choice?.reasoning || choice?.message?.reasoning_content || choice?.message?.reasoning || res?.thinking
+            || (Array.isArray(res?.content) ? res.content.filter(p => p.type === 'thinking').map(p => p.thinking || '').join('') : '')
+            || (candidate?.content?.parts || []).filter(p => p.thought).map(p => p.text || '').join('');
+        const finishReason = choice?.finish_reason || res?.finish_reason || res?.stop_reason || res?.finishReason
+            || candidate?.finishReason || res?.details?.finish_reason || res?.incomplete_details?.reason || meta.finishReason || null;
+        if (choice?.message?.refusal || /content_filter|safety|blocked|refusal|recitation|prohibited/i.test(String(finishReason || ''))) {
+            const error = new Error('Provider stopped generation: ' + (choice?.message?.refusal || finishReason));
+            error.generationBlocked = true;
+            throw error;
+        }
+        return { ...meta, text: typeof text === 'string' ? text : '', reasoning: typeof reasoning === 'string' ? reasoning : '',
+            finishReason, usage: res?.usage || res?.usageMetadata || null };
     }
 
     function grow(acc, chunk) {
@@ -2206,6 +2237,7 @@
         // call in the extension funnels through here, so this single refusal
         // covers fetch rounds, think-recovery, auto-continue, and all three
         // director passes. The flag is cleared by beginRun(), never here.
+        const generationMeta = { backend: pid && c.ConnectionManagerRequestService?.sendRequest ? 'Connection Profile' : 'current connection', maxTokens: maxTok };
         if (stopRequested) return '';
         try { abortCtl = new AbortController(); } catch (e) { abortCtl = null; }
 
@@ -2217,6 +2249,7 @@
                         let acc = '';
                         let reasoning = '';
                         let streamIt = null;
+                        let finishReason = null;
                         try {
                             // Manual iteration so every inter-chunk gap sits under the
                             // stall deadline — a stream that opens and then goes quiet
@@ -2226,36 +2259,46 @@
                                 const step = await raceTransport(streamIt.next(), 'stream stalled mid-response');
                                 if (step.done) break;
                                 const chunk = step.value;
+                                if (chunk?.error) throw new Error(String(chunk.error.message || chunk.error));
                                 if (stopRequested) break;
                                 if (typeof chunk === 'string') {
                                     acc = grow(acc, chunk);
                                 } else {
-                                    acc = grow(acc, String(chunk?.text ?? ''));
+                                    // SillyTavern's StreamResponse.text is a cumulative snapshot.
+                                    // Replacing it also handles providers that revise their prefix.
+                                    if (typeof chunk?.text === 'string') acc = chunk.state || chunk.swipes ? chunk.text : grow(acc, chunk.text);
+                                    else acc += String(chunk?.choices?.[0]?.delta?.content || '');
+                                    finishReason = chunk?.finish_reason || chunk?.stop_reason || chunk?.choices?.[0]?.finish_reason || chunk?.state?.finish_reason || chunk?.state?.stop_reason || finishReason;
                                     const r = chunk?.state?.reasoning ?? chunk?.reasoning;
                                     if (typeof r === 'string') reasoning = grow(reasoning, r);
                                 }
                                 if (onPartial) onPartial(acc, reasoning);
                             }
-                        } catch (se) { if (!stopRequested) throw se; }
+                        } catch (se) {
+                            if (!stopRequested) {
+                                const failure = new Error(generationErrorMessage(se), { cause: se });
+                                failure.partialGeneration = normalizeGeneration({ content: acc, reasoning }, { ...generationMeta, finishReason: 'stream_error' });
+                                throw failure;
+                            }
+                        }
                         finally {
                             // Formally close the stream on user stop/abort: without
                             // return(), a backend generator keeps producing to
                             // completion server-side after we stopped listening.
                             if (stopRequested && streamIt) { try { await streamIt.return?.(); } catch (e) { /* ignore */ } }
                         }
-                        if (reasoning && !/<think|<reasoning/i.test(acc)) {
-                            return '<think>' + reasoning + '</think>\n' + acc;
-                        }
-                        return acc;
+                        return normalizeGeneration({ content: acc, reasoning }, { ...generationMeta, finishReason });
                     }
-                    return extractText(res);
+                    return normalizeGeneration(res, generationMeta);
                 } catch (e) {
+                    if (stopRequested) return normalizeGeneration('', { ...generationMeta, finishReason: 'user_stop' });
+                    if (e.partialGeneration || e.generationBlocked) throw e;
                     console.warn(LOG, 'streaming failed, retrying without stream', e);
                 }
             }
             try {
-                const res = await raceTransport(c.ConnectionManagerRequestService.sendRequest(pid, messages, maxTok, { signal: abortCtl?.signal }), 'request');
-                return extractText(res);
+                const res = await raceTransport(c.ConnectionManagerRequestService.sendRequest(pid, messages, maxTok, { signal: abortCtl?.signal, extractData: false }), 'request');
+                return normalizeGeneration(res, generationMeta);
             } catch (se) {
                 if (stopRequested) return '';
                 throw se;
@@ -2268,11 +2311,14 @@
             .filter(m => m.role !== 'system')
             .map(m => (m.role === 'user' ? '[User]\n' : '[Assistant]\n') + m.content)
             .join('\n\n') + '\n\n[Assistant]\n';
-        if (typeof c.generateRaw === 'function') {
+        if (typeof c.generateRawData === 'function' || typeof c.generateRaw === 'function') {
             usingFallbackGen = true;
             try {
-                const res = await raceTransport(c.generateRaw({ prompt: convo, systemPrompt: sys }), 'request (fallback backend)');
-                return extractText(res);
+                // generateRaw cleans up the answer and throws on empty text, losing
+                // reasoning/finish metadata. Prefer raw data where the host exposes it.
+                const generate = c.generateRawData || c.generateRaw;
+                const res = await raceTransport(generate.call(c, { prompt: convo, systemPrompt: sys, responseLength: maxTok, trimNames: false }), 'request (fallback backend)');
+                return normalizeGeneration(res, generationMeta);
             } catch (se) {
                 if (stopRequested) return '';
                 throw se;
@@ -3483,7 +3529,9 @@
     // ------------------------------------------------------------------
 
     function splitThinking(text) {
-        let think = '';
+        const generation = text && typeof text === 'object' ? text : null;
+        if (generation) text = generation.text;
+        let think = generation?.reasoning || '';
         let rest = String(text || '').replace(/<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/gi, (m0, tag, body) => {
             const b = String(body).trim();
             if (b) think += (think ? '\n\n' : '') + b;
@@ -3494,12 +3542,12 @@
             if (b) think += (think ? '\n\n' : '') + b;
             return '';
         });
-        return { think, rest: rest.trim() };
+        return { think, rest: rest.trim(), generation };
     }
 
-    async function callLLMSmart(messages, onPartial) {
+    async function callLLMSmart(messages, onPartial, maxTokOverride) {
         const maxRe = numSetting(settings.thinkRetries, 2, 0, 99);
-        let raw = await callLLM(messages, onPartial);
+        let raw = await callLLM(messages, onPartial, maxTokOverride);
         let sp = splitThinking(raw);
 
         // Phase A: thinking consumed the whole budget -> feed the reasoning back,
@@ -3510,7 +3558,7 @@
         // is mathematically doomed to consume it again \u2014 the recovery pot must
         // be bigger; (b) 'do not reason' cannot switch off a reasoning runtime,
         // so give the forced phase an explicit one-sentence escape hatch.
-        const basePot = numSetting(settings.maxTokens, defaults.maxTokens, 256, 32768);
+        const basePot = numSetting(maxTokOverride ?? settings.maxTokens, defaults.maxTokens, 256, 32768);
         const bigPot = Math.min(32768, Math.max(basePot * 2, basePot + 2048));
         let attempts = 0;
         while (!stopRequested && !sp.rest && sp.think && attempts < maxRe) {
@@ -3525,7 +3573,7 @@
                 addBubble('note', 'Recovery made no progress (empty response) \u2014 stopping retries.');
                 break;
             }
-            sp = { think: sp.think + (sp2.think ? '\n\n' + sp2.think : ''), rest: sp2.rest };
+            sp = { think: sp.think + (sp2.think ? '\n\n' + sp2.think : ''), rest: sp2.rest, generation: sp2.generation };
         }
 
         // Phase B: answer exists but was cut mid-block -> continue from the cut and stitch
@@ -3543,9 +3591,60 @@
                 addBubble('note', 'Continuation returned nothing \u2014 stopping.');
                 break;
             }
-            sp = { think: sp.think + (sp3.think ? '\n\n' + sp3.think : ''), rest: sp.rest + sp3.rest };
+            sp = { think: sp.think + (sp3.think ? '\n\n' + sp3.think : ''), rest: sp.rest + sp3.rest, generation: sp3.generation };
         }
         return sp;
+    }
+
+    function generationDiagnostic(generation) {
+        return (generation?.backend || 'generation backend') + ', output budget ' + (generation?.maxTokens || settings.maxTokens)
+            + ', finish reason: ' + (generation?.finishReason || 'not exposed by host');
+    }
+
+    async function callLoreLLM(messages, onPartial) {
+        const chatAt = chatRef();
+        const base = numSetting(settings.maxTokens, defaults.maxTokens, 256, 32768);
+        const larger = Math.min(32768, Math.max(base * 2, base + 2048));
+        let request = messages, partial = '', think = '', failure = '', generation = null;
+        // One bounded recovery per lore round; tool rounds keep their own budgets.
+        // Re-generate a complete response, rather than stitching arbitrary prose/JSON.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            if (stopRequested || !sameChat(chatAt)) return { rest: '', think: '' };
+            let sp;
+            try {
+                sp = await callLLMSmart(request, onPartial, attempt ? larger : base);
+                generation = sp.generation;
+                if (sp.think) think = sp.think;
+                if (sp.rest) partial = sp.rest;
+                const finish = String(generation?.finishReason || '').toLowerCase();
+                const tool = wiDiscoveryRequest(sp.rest);
+                if (!sp.rest.trim()) failure = 'empty answer (no usable message text)';
+                else if (/length|max_tokens|max_output_tokens|token_limit/.test(finish)) failure = 'provider truncated output: ' + finish;
+                else if (looksTruncated(sp.rest, 'wisearch') || looksTruncated(sp.rest, 'wifetch')) failure = 'incomplete lore tool block';
+                else if (!tool && sp.rest.length < 600 && /:\s*$/.test(sp.rest)) failure = 'suspected incomplete synthesis: only a lead-in ending with a colon';
+                else return sp;
+            } catch (error) {
+                failure = generationErrorMessage(error);
+                generation = error.partialGeneration || { backend: settings.profileId ? 'Connection Profile' : 'current connection', maxTokens: attempt ? larger : base };
+                if (error.partialGeneration) {
+                    const split = splitThinking(error.partialGeneration);
+                    if (split.rest) partial = split.rest;
+                    if (split.think) think = split.think;
+                }
+                // Retry only the known empty-answer failure or a broken stream.
+                // Auth, context-size, provider rejection, and other errors stay explicit.
+                if (!error.partialGeneration && !/no message generated/i.test(failure)) {
+                    throw new Error('Lore generation failed (' + generationDiagnostic(generation) + '): ' + failure, { cause: error });
+                }
+            }
+            if (stopRequested || !sameChat(chatAt)) return { rest: '', think: '' };
+            if (attempt === 1) break;
+            addBubble('note', 'Lore generation recovery: ' + failure + ' (' + generationDiagnostic(generation) + '). Retrying once with a fresh ' + larger + '-token output budget.');
+            request = [...messages,
+                ...(partial ? [{ role: 'assistant', content: partial }] : []),
+                { role: 'user', content: '[GENERATION RECOVERY] The previous generation was unusable: ' + failure + '. Return a COMPLETE replacement response to the original request using the supplied evidence. Do not output only a lead-in. Be concise. If more lore is necessary, return one complete wisearch or wifetch JSON block. Otherwise give the full answer with citations. Do not continue a broken JSON fragment or repeat only its preamble.' }];
+        }
+        return { rest: partial, think, generation, incomplete: true, failure: failure + ' (' + generationDiagnostic(generation) + '); one recovery attempt exhausted' };
     }
 
     function parseShortcuts() {
@@ -3924,7 +4023,7 @@
                     addBubble('note', reply); pushHistoryTo(sessObj, 'note', reply);
                     break;
                 }
-                const split = await callLLMSmart(messages, live);
+                const split = lore ? await callLoreLLM(messages, live) : await callLLMSmart(messages, live);
                 reply = split.rest;
                 think = split.think;
                 if (!sameChat(chatAt)) {
@@ -3937,6 +4036,12 @@
                     pushHistoryTo(sessObj, 'note', 'Generation stopped \u2014 partial reply kept.');
                     break;
                 }
+                if (split.incomplete) {
+                    const note = 'INCOMPLETE lore response — ' + split.failure + (reply ? '\n\nPartial output (not a completed answer):\n' + reply : '\nNo assistant answer was produced.');
+                    addBubble('note', note); pushHistoryTo(sessObj, 'note', note);
+                    toast('Lore generation incomplete: ' + split.failure, 'error');
+                    return; // Never stage edits or store partial prose as a completed answer.
+                }
                 const loreRequest = lore ? wiDiscoveryRequest(reply) : null;
                 if (loreRequest) {
                     if (round >= rounds) {
@@ -3947,7 +4052,7 @@
                         : loreRequest.tag === 'wisearch' ? wiLoreSearch(lore, loreRequest.value) : wiLoreFetch(lore, loreRequest.value);
                     messages.push({ role: 'assistant', content: reply });
                     messages.push({ role: 'user', content: result + (round === rounds - 1 ? '\nFINAL CALL: answer from received evidence now; no further retrieval is available.' : '') });
-                    addBubble('note', 'Lore ' + (loreRequest.tag || 'request error') + ': ' + (loreRequest.tag === 'wifetch' ? loreRequest.value.join(', ').slice(0, 500) : String(loreRequest.value?.query || '').slice(0, 200)) + ' (' + lore.remaining + ' lore characters remaining).');
+                    addBubble('note', 'Lore ' + (loreRequest.tag || 'request error') + ': ' + (loreRequest.tag === 'wifetch' ? loreRequest.value.join(', ').slice(0, 500) : String(loreRequest.error || loreRequest.value?.query || '').slice(0, 200)) + ' (' + lore.remaining + ' lore characters remaining).');
                     continue;
                 }
                 const wiRefs = wiCanEdit() ? parseWiFetch(reply) : null;
