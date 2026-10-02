@@ -2426,6 +2426,93 @@ ctx.loadWorldInfo = oldLoreLoad;
 ok(cancelledCalls === 0, 'Stop during local indexing sends no model request');
 CA.wiDiscovery = false; CA.wiEnable = false; CA.wiFull = false;
 
+console.log('== v2.84.1 lore generation regressions ==');
+CA.wiDiscovery = true; CA.wiBooks = 'Terranovia'; CA.wiEnable = false; CA.wiFull = false;
+CA.maxTokens = 4096; CA.thinkRetries = 1; CA.fetchRounds = 3; CA.streaming = false;
+async function loreScenario(responder, options = {}) {
+    CA.profileId = options.fallback ? '' : 'gate-profile';
+    CA.streaming = !!options.stream;
+    ctx.chatMetadata.continuityCopilot = {};
+    const calls = []; const start = ccLogText().length;
+    delete ctx.generateRawData;
+    ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages, tokens, custom) => {
+        calls.push({ messages: structuredClone(messages), tokens, custom });
+        return responder(calls.length, calls[calls.length - 1]);
+    } };
+    ctx.generateRaw = async params => { calls.push(params); return responder(calls.length, params); };
+    if (options.rawData) ctx.generateRawData = ctx.generateRaw;
+    document.getElementById('chatassist_input').value = 'Which Veracruz factions could engage with Bunyon?';
+    clickFresh('chatassist_send'); await sleep(350);
+    return { calls, log: ccLogText().slice(start).join('\n'), history: JSON.stringify(ctx.chatMetadata.continuityCopilot) };
+}
+const searchRequest = '<wisearch>{"query":"harbour"}</wisearch>';
+const completeLoreAnswer = '[CANON] The Compact controls the harbour. [INFERENCE] Its agents could approach Bunyon. [PROPOSAL] An envoy asks for help. WB[Terranovia#0]';
+const legacyBudget = await loreScenario((n, params) => {
+    if (n === 1) return searchRequest;
+    if (params.responseLength !== 4096) throw new Error('No message generated');
+    return completeLoreAnswer;
+}, { fallback: true });
+ok(legacyBudget.calls.length === 2 && legacyBudget.calls.every(x => x.responseLength === 4096) && legacyBudget.log.includes(completeLoreAnswer), 'fallback wisearch continuation receives a fresh configured output budget on every call');
+const structuredLore = await loreScenario(n => n === 1 ? { choices: [{message:{content:searchRequest},finish_reason:'stop'}] }
+    : n === 2 ? { choices: [{message:{content:'<wifetch>["Terranovia#0"]</wifetch>'},finish_reason:'stop'}] }
+    : { choices: [{message:{content:completeLoreAnswer},finish_reason:'stop'}] });
+ok(structuredLore.calls.length === 3 && structuredLore.log.includes(completeLoreAnswer), 'raw structured wisearch then wifetch continues to a complete final answer');
+ok(structuredLore.calls.every(c => c.tokens === 4096 && c.custom.extractData === false), 'profile requests preserve metadata and do not reuse a spent output budget');
+ok(!structuredLore.history.includes('choices'), 'raw provider envelopes are extracted, never rendered or saved as JSON answers');
+const reasoningLore = await loreScenario(n => n === 1 ? searchRequest : n === 2 ? {content:'', reasoning:'The Compact and Guild are connected; answer from the retrieved lore.'} : completeLoreAnswer);
+ok(reasoningLore.calls.length === 3 && reasoningLore.log.includes(completeLoreAnswer), 'structured reasoning-only intermediate response is retained and recovered');
+ok(reasoningLore.calls[2]?.messages.some(m => m.content.includes('The Compact and Guild are connected')), 'reasoning-only recovery receives the retained structured reasoning rather than retrying blind');
+const emptyLore = await loreScenario(n => n === 1 ? searchRequest : n === 2 ? '' : completeLoreAnswer);
+ok(emptyLore.calls.length === 3 && emptyLore.log.includes(completeLoreAnswer), 'empty intermediate response gets a bounded recovery and successful answer');
+const emptyFailure = await loreScenario(() => '');
+ok(emptyFailure.calls.length === 2 && /empty|no (?:answer|message|text)/i.test(emptyFailure.log) && /4096|8192/.test(emptyFailure.log), 'repeated empty output stops explicitly with generation diagnostics');
+const legacyEmpty = await loreScenario(n => { if (n === 1) return searchRequest; if (n === 2) throw new Error('No message generated'); return completeLoreAnswer; }, {fallback:true});
+ok(legacyEmpty.calls.length === 3 && legacyEmpty.log.includes(completeLoreAnswer), 'legacy No message generated after search recovers without suppressing a persistent error');
+const leadIn = 'Looking at the fetched entries, here’s what’s canonically present in Veracruz and could plausibly engage with Bunyon right now:';
+const clipped = await loreScenario(n => n === 1 ? searchRequest : n === 2 ? {content:'The Compact controls', finish_reason:'length'} : {content:completeLoreAnswer, finish_reason:'stop'});
+ok(clipped.calls.length === 3 && clipped.log.includes(completeLoreAnswer) && clipped.calls[2].tokens > clipped.calls[1].tokens, 'length-limited final synthesis is regenerated completely with a fresh larger budget');
+const missingReason = await loreScenario(n => n === 1 ? leadIn : completeLoreAnswer);
+ok(missingReason.calls.length === 2 && missingReason.log.includes(completeLoreAnswer), 'a dangling synthesis lead-in is not accepted even when the host strips finish reasons');
+const unresolvedClip = await loreScenario(() => ({content:leadIn, finish_reason:'length'}));
+ok(unresolvedClip.calls.length === 2 && /incomplete/i.test(unresolvedClip.log) && /length/.test(unresolvedClip.log), 'persistent truncation preserves the partial text with an explicit incomplete status and stop reason');
+ok(!unresolvedClip.history.includes('"role":"assistant"'), 'unresolved partial output is not recorded as a completed assistant answer');
+const malformedTool = await loreScenario(n => n === 1 ? '<wisearch>{"query":' : completeLoreAnswer);
+ok(malformedTool.calls.length === 2 && malformedTool.log.includes(completeLoreAnswer), 'unclosed lore tool block is recovered instead of silently terminating');
+const backendError = await loreScenario(() => { throw new Error('API request failed', {cause:new Error('provider context length exceeded')}); });
+ok(backendError.calls.length === 1 && backendError.log.includes('provider context length exceeded'), 'provider failure cause survives the wrapper and is not blindly retried');
+const filtered = await loreScenario(() => ({content:'', finish_reason:'content_filter'}));
+ok(filtered.calls.length === 1 && filtered.log.includes('content_filter'), 'provider refusal/filter termination is surfaced without automatic retry');
+const fallbackRaw = await loreScenario(n => n === 1 ? {choices:[{message:{content:'',reasoning_content:'Plan the Compact answer.'},finish_reason:'length'}]} : {choices:[{message:{content:completeLoreAnswer},finish_reason:'stop'}]}, {fallback:true, rawData:true});
+ok(fallbackRaw.calls.length === 2 && fallbackRaw.log.includes(completeLoreAnswer), 'raw fallback data preserves reasoning and finish metadata before host text cleanup');
+const streamLore = await loreScenario(n => function () { return (async function* () {
+    if (n === 1) { yield {text:searchRequest, state:{reasoning:''}}; yield {text:searchRequest, state:{reasoning:''}}; }
+    else { yield {text:leadIn,state:{reasoning:''}}; yield {text:completeLoreAnswer,state:{reasoning:''}}; yield {text:completeLoreAnswer,state:{reasoning:''}}; }
+})(); }, {stream:true});
+ok(streamLore.calls.length === 2 && streamLore.log.includes(completeLoreAnswer), 'SillyTavern cumulative streams retain the latest text and complete the discovery answer');
+ok(!streamLore.history.includes(leadIn), 'cumulative stream revisions replace the old prefix instead of appending a second answer');
+const brokenStream = await loreScenario(n => function () { return (async function* () {
+    yield {text:leadIn,state:{reasoning:''}};
+    if (n === 1) throw new Error('connection reset mid-stream');
+    yield {text:completeLoreAnswer,state:{reasoning:''}};
+})(); }, {stream:true});
+ok(brokenStream.calls.length === 2 && brokenStream.log.includes(completeLoreAnswer) && /connection reset mid-stream/.test(brokenStream.log), 'interrupted stream reports the real cause and recovers without accepting the partial answer');
+const malformedJson = await loreScenario(n => n === 1 ? searchRequest : n === 2 ? '<wisearch>{broken}</wisearch>' : completeLoreAnswer);
+ok(malformedJson.calls.length === 3 && malformedJson.log.includes(completeLoreAnswer) && /Use wisearch/.test(malformedJson.log), 'malformed intermediate JSON is explicitly reported and coached into a complete answer');
+const streamingLimit = await loreScenario(n => function () { return (async function* () {
+    yield {text: n === 1 ? leadIn : completeLoreAnswer, state:{reasoning:''}, finish_reason:n === 1 ? 'length' : 'stop'};
+})(); }, {stream:true});
+ok(streamingLimit.calls.length === 2 && streamingLimit.log.includes(completeLoreAnswer), 'streamed finish metadata triggers truncation recovery');
+const streamBlocked = await loreScenario(() => function () { return (async function* () { yield {text:'',state:{reasoning:''}, finish_reason:'content_filter'}; })(); }, {stream:true});
+ok(streamBlocked.calls.length === 1 && streamBlocked.log.includes('content_filter'), 'streamed provider filter is not retried through the non-stream fallback');
+const unknownShape = await loreScenario(n => n === 1 ? {unexpected:'not an answer', usage:{total_tokens:10}} : completeLoreAnswer);
+ok(unknownShape.calls.length === 2 && unknownShape.log.includes(completeLoreAnswer) && !unknownShape.history.includes('not an answer'), 'unknown response objects cannot become JSON assistant answers');
+const recoveryStop = await loreScenario(() => { clickFresh('chatassist_send'); return ''; });
+ok(recoveryStop.calls.length === 1, 'user Stop prevents the new empty-answer recovery from starting another call');
+const textReasoning = await loreScenario(n => n === 1 ? {choices:[{text:'',reasoning:'TEXT-REASONING-RETAINED',finish_reason:'length'}]} : completeLoreAnswer);
+ok(textReasoning.calls.length === 2 && textReasoning.calls[1].messages.some(m => m.content.includes('TEXT-REASONING-RETAINED')), 'text-completion reasoning is retained when raw response extraction is requested');
+CA.wiDiscovery = false; CA.streaming = false; CA.profileId = 'gate-profile';
+delete ctx.generateRaw; delete ctx.generateRawData;
+
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) { console.log('MODULE INTEGRITY FAILED ✗'); process.exit(1); }
