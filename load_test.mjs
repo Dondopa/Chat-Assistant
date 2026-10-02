@@ -187,7 +187,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-copyFileSync(join(HERE, 'index.js'), join(dir, 'index.js'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignBatch, campaignReview, campaignValid, campaignFingerprint, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -1029,7 +1029,7 @@ console.log('== v2.69.0 invariants: the stop flag belongs to the RUN, not to one
 // the user had already cancelled.
 ok(/function beginRun\(\) \{\n        running = true;\n        stopRequested = false;\n        setBusy\(true\);\n    \}/.test(SRC), 'beginRun() is the one place a run starts: takes the lock AND clears the stop flag');
 ok((SRC.match(/\n        running = true;/g) || []).length === 1, 'the lock is taken in exactly one place (beginRun), nowhere else');
-ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 9, 'all 9 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 9)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
+ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 10, 'all 10 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 10)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
 ok(!/const maxTok = [^\n]*\n        stopRequested = false;/.test(SRC), 'callLLM no longer clears the stop flag');
 ok(/if \(stopRequested\) return '';\n        try \{ abortCtl = new AbortController/.test(SRC), 'callLLM refuses to open a request when the run is already stopped');
 
@@ -2398,7 +2398,7 @@ ok(tiny.served.size === 0, 'an undelivered entry is never marked as read');
 loreSame = false;
 ok(await loreApi.wiCreateDiscovery('old-chat') === null, 'chat change aborts index construction'); loreSame = true;
 ok(!!loreApi.wiDiscoveryRequest('<wisearch>broken</wisearch>').error, 'malformed search gets actionable feedback');
-ok(loreApi.LORE_RULES.includes('[CANON]') && loreApi.LORE_RULES.includes('[INFERENCE]') && loreApi.LORE_RULES.includes('[PROPOSAL]'), 'canon, inference and proposal labels are explicitly required');
+ok(loreApi.LORE_RULES.includes('[WORLD CANON]') && loreApi.LORE_RULES.includes('[INFERENCE]') && loreApi.LORE_RULES.includes('[PROPOSAL]'), 'canon, inference and proposal labels are explicitly required');
 
 // Drive the actual send loop: initial search -> read -> relationship search -> read -> answer.
 CA.wiDiscovery = true; CA.wiEnable = true; CA.wiFull = true; CA.wiBooks = 'Terranovia'; CA.fetchRounds = 3;
@@ -2519,6 +2519,101 @@ const textReasoning = await loreScenario(n => n === 1 ? {choices:[{text:'',reaso
 ok(textReasoning.calls.length === 2 && textReasoning.calls[1].messages.some(m => m.content.includes('TEXT-REASONING-RETAINED')), 'text-completion reasoning is retained when raw response extraction is requested');
 CA.wiDiscovery = false; CA.streaming = false; CA.profileId = 'gate-profile';
 delete ctx.generateRaw; delete ctx.generateRawData;
+
+console.log('== Campaign Ledger: provenance, isolation and bounded retrieval ==');
+const campaign = globalThis.__campaignTest;
+CA.profileId = 'gate-profile'; CA.streaming = false;
+ctx.chatMetadata = {}; ctx.chatId = 'campaign-A';
+ctx.chat = [
+    { name:'Narrator', mes:'Garrick says: "Ask for Jericho at the Black Anchor tavern down by the wharf after sundown."', send_date:'2026-10-02' },
+    { name:'Narrator', mes:'Vael says: "Jericho runs security for the Red Arcade private buyers."' },
+    { name:'Narrator', mes:'The warehouse exploded, showering the harbor road with burning timber.' },
+    { name:'Narrator', mes:'Vael says: "The Duchess is secretly a dragon."' },
+];
+let campaignRequests = [], campaignWrites = 0;
+ctx.saveWorldInfo = async () => { campaignWrites++; };
+const extracted = [
+ { type:'NEW_ENTITY', subject:'Jericho', fact:'Garrick refers to Jericho at Black Anchor.', sourceIndex:0, evidence:'dialogue', speaker:'Garrick', quote:ctx.chat[0].mes, related:['Black Anchor','Veracruz'] },
+ { type:'NEW_ENTITY', subject:'Black Anchor', fact:'Garrick refers to the Black Anchor tavern.', sourceIndex:0, evidence:'dialogue', speaker:'Garrick', quote:ctx.chat[0].mes, related:['Jericho','Veracruz'] },
+ { type:'OBSERVED_FACT', subject:'Jericho', fact:'Vael claims Jericho runs Red Arcade security.', sourceIndex:1, evidence:'narration', speaker:'Vael', quote:ctx.chat[1].mes, related:['Red Arcade'] },
+ { type:'STATE_CHANGE', subject:'Warehouse', fact:'The warehouse exploded.', sourceIndex:2, evidence:'narration', quote:ctx.chat[2].mes, related:['harbor'] },
+ { type:'OBSERVED_FACT', subject:'Duchess', fact:'Vael claims the Duchess is a dragon.', sourceIndex:3, evidence:'dialogue', speaker:'Vael', quote:ctx.chat[3].mes },
+];
+ctx.ConnectionManagerRequestService = { sendRequest: async (_p, messages) => { campaignRequests.push(messages); return JSON.stringify({records:extracted}); } };
+CA.wiBooks='CampaignBaseline';
+ctx.loadWorldInfo=async()=>({entries:{0:{uid:0,key:['Jericho'],comment:'Jericho',content:'Jericho appears in this baseline entry.'}}});
+campaign.campaignStore();
+ctx.chatMetadata.continuityCopilot.sessions[0].history.push({role:'assistant', text:'SESSION_ONLY_JERICHO_PROPOSAL', content:'SESSION_ONLY_JERICHO_PROPOSAL'});
+await campaign.campaignAudit(undefined, true);
+const storeA = campaign.campaignStore();
+ok(storeA.records.length === 5 && storeA.next === 4, 'audit saves five source-backed candidates and advances the cursor');
+ok(storeA.records[0]?.lore.candidates.includes('CampaignBaseline#0') && storeA.records[0]?.lore.status.includes('not verified'), 'optional lore checking reuses search without promoting candidates to canon');
+ok(campaignRequests.length === 1, 'campaign audit uses one model call including optional local lore checks');
+ok(storeA.records.every(r => r.status === 'pending' && r.id && r.source.fingerprint && r.source.quote), 'extractions require review and retain source evidence');
+ok(storeA.records[2].type === 'NPC_CLAIM' && storeA.records[4].provenance === 'NPC CLAIM', 'quoted dialogue and explicit dialogue cannot become objective campaign facts');
+ok(storeA.records[0].provenance === 'DIALOGUE REFERENCE' && storeA.records[1].type === 'NEW_ENTITY', 'Jericho and Black Anchor preserve introduced-reference provenance');
+ok(storeA.records[3].type === 'STATE_CHANGE' && storeA.records[3].provenance === 'CAMPAIGN CANON', 'narrated warehouse explosion remains an objective state change');
+ok(!JSON.stringify(campaignRequests).includes('SESSION_ONLY_JERICHO_PROPOSAL'), 'audit excludes Chat Assistant session proposals');
+ok(campaign.campaignSelect('Jericho') === '', 'pending candidates cannot enter campaign context');
+for (const r of storeA.records) campaign.campaignReview(r.id,'accepted');
+ok(campaign.campaignSelect('Jericho Red Arcade Veracruz').includes('NPC CLAIM') && campaign.campaignSelect('Warehouse').includes('CAMPAIGN CANON'), 'relevant retrieval preserves claim versus campaign provenance');
+ok(campaign.campaignSelect('unrelatedxyz') === '', 'unrelated records are not injected');
+ok(!campaign.gatherMemory().includes('campaignLedger') && !campaign.gatherMemory().includes('warehouse exploded'), 'general memory collection cannot inject the entire ledger');
+const ripple = await campaign.rippleScan([{span:'warehouse exploded', removed:0}]);
+ok(ripple.some(x=>x.sites.some(y=>y.kind==='campaign')), 'consistency scan includes accepted campaign facts');
+await campaign.campaignAudit(0);
+ok(storeA.records.length === 5, 're-audit suppresses exact duplicate records');
+campaign.campaignReview(storeA.records[0].id,'rejected'); await campaign.campaignAudit(0);
+ok(storeA.records.length === 5 && storeA.records[0].status === 'rejected', 'rejected duplicate remains rejected after re-audit');
+const beforeCalls = campaignRequests.length; await campaign.campaignAudit();
+ok(campaignRequests.length === beforeCalls, 'incremental audit does not call the model without new RP');
+ctx.chat.push({name:'Narrator',mes:'The Black Anchor stood beside the Veracruz wharf.'});
+ctx.ConnectionManagerRequestService.sendRequest = async (_p,messages) => { campaignRequests.push(messages); return JSON.stringify({records:[{type:'OBSERVED_FACT',subject:'Black Anchor',fact:ctx.chat[4].mes,sourceIndex:4,evidence:'narration',quote:ctx.chat[4].mes}]}); };
+await campaign.campaignAudit();
+ok(storeA.next === 5 && storeA.records.length === 6 && !campaignRequests.at(-1)[1].content.includes('warehouse exploded'), 'incremental audit sends only new RP messages');
+const mdA=ctx.chatMetadata, chatA=ctx.chat;
+ctx.chatMetadata={}; ctx.chatId='campaign-B'; ctx.chat=[{name:'Narrator',mes:'A different campaign begins.'}];
+ok(campaign.campaignStore().records.length === 0 && campaign.campaignSelect('Jericho') === '', 'another chat has an isolated empty ledger');
+ctx.chatMetadata=mdA; ctx.chat=chatA; ctx.chatId='campaign-A';
+ok(campaign.campaignStore() === storeA, 'returning to the chat restores its ledger');
+const restored=JSON.parse(JSON.stringify(mdA)); ctx.chatMetadata=restored;
+ok(campaign.campaignStore().records.length === 6, 'ledger survives metadata serialization and reload'); ctx.chatMetadata=mdA;
+ctx.chat[2].mes='The warehouse remained intact.';
+ok(campaign.campaignSelect('Warehouse') === '', 'edited or swiped source makes its record stale and ineligible');
+const quoteOnly=campaign.campaignParse(JSON.stringify({records:[{...extracted[4], evidence:'narration', quote:'The Duchess is secretly a dragon.'}]}),campaign.campaignBatch(0).sources);
+ok(quoteOnly[0].provenance==='NPC CLAIM','a quote inside spoken dialogue cannot evade claim provenance by omitting quotation marks');
+storeA.next=2; // Different from batch end: a wrongly committed failure must move this cursor.
+const beforeRecordCount=storeA.records.length, beforeNext=storeA.next;
+for (const response of ['', '{bad', JSON.stringify({records:[{...extracted[0],quote:'UNSUPPORTED_FAKE_EVIDENCE'}]}), JSON.stringify({records:[{...extracted[0],type:'PROPOSAL'}]})]) {
+ ctx.ConnectionManagerRequestService.sendRequest=async()=>response; await campaign.campaignAudit(0);
+ ok(storeA.records.length===beforeRecordCount && storeA.next===beforeNext, 'malformed/empty/unbacked/proposal audit fails without advancing or writing');
+}
+ctx.ConnectionManagerRequestService.sendRequest=async()=>({choices:[{message:{content:JSON.stringify({records:[]})},finish_reason:'length'}]});
+await campaign.campaignAudit(0); ok(storeA.next===beforeNext, 'token-truncated audit cannot commit even parseable JSON');
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chatMetadata={}; ctx.chatId='campaign-B'; return JSON.stringify({records:[{...extracted[2],fact:'Late write must not persist.'}]});};
+await campaign.campaignAudit(0); ok(storeA.next===beforeNext && storeA.records.length===beforeRecordCount && !ctx.chatMetadata.continuityCopilot?.campaignLedger, 'chat switch during audit writes to neither chat');
+ctx.chatMetadata=mdA; ctx.chatId='campaign-A';
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chat[0].mes+=' edited'; return JSON.stringify({records:[{...extracted[2],fact:'Source drift must not persist.'}]});};
+await campaign.campaignAudit(0); ok(storeA.next===beforeNext && storeA.records.length===beforeRecordCount, 'source mutation during audit discards batch and progress');
+ctx.chat[0].mes=chatA[0].mes;
+ctx.chat=Array.from({length:80},(_,i)=>({name:'Narrator',mes:'A campaign event '+i+' occurred at the harbor.'}));
+const boundedBatch=campaign.campaignBatch(0);
+ok(boundedBatch.sources.size===50 && boundedBatch.next===50 && boundedBatch.text.length<=24000, 'audit caps a batch at 50 whole RP messages');
+ctx.chat=[{name:'Narrator',mes:'x'.repeat(25000)}];
+let oversized=false;try{campaign.campaignBatch(0);}catch{oversized=true;}
+ok(oversized, 'oversized single RP message fails explicitly instead of silently skipping text');
+ctx.chat=chatA;
+const baseRecord=storeA.records.find(r=>r.source.index===4);
+for(let i=0;i<100;i++)storeA.records.push({...structuredClone(baseRecord),id:'CL-extra-'+i,status:'accepted',fact:'Black Anchor detail '+i+' '+ 'x'.repeat(400)});
+const boundedContext=campaign.campaignSelect('Black Anchor');
+ok(boundedContext.length<=6000 && boundedContext.split('\n').filter(x=>x.startsWith('{')).length<=12, 'retrieval obeys record and character caps');
+ok(campaignWrites===0, 'Campaign Ledger never writes World Info');
+ctx.chatMetadata={}; ctx.chat=Array.from({length:60},()=>({is_system:true,mes:'Hidden RP.'}));
+campaign.campaignStore().next=0;
+let hiddenCalls=0; ctx.ConnectionManagerRequestService.sendRequest=async()=>{hiddenCalls++; return JSON.stringify({records:[]});};
+await campaign.campaignAudit();
+ok(campaign.campaignStore().next===50 && hiddenCalls===0, 'hidden-only batch advances without a model call so later RP remains reachable');
+ctx.chatMetadata={}; ctx.chat=[];
 
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
