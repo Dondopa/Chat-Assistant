@@ -122,7 +122,13 @@ globalThis.localStorage = {
     removeItem(k) { this._d.delete(k); },
 };
 const chain = new Proxy(function () {}, { get: (_t, p) => (p === 'length' ? 0 : chain), apply: () => chain });
-globalThis.$ = new Proxy(function () { return chain; }, { get: () => chain, apply: () => chain });
+globalThis.$ = new Proxy(function () {}, { get: () => chain, apply: (_fn, _this, [element]) => {
+    if (element?._on) return { on: (type, handler) => element.addEventListener(type, handler) };
+    return chain;
+} });
+const extensionsMenu = makeEl('div');
+extensionsMenu.id = 'extensionsMenu';
+documentMock.body.appendChild(extensionsMenu);
 globalThis.jQuery = globalThis.$;
 
 const event_types = {
@@ -192,6 +198,14 @@ ok(loaded, 'index.js loads as an ES module and executes' + (loaded ? '' : ' — 
 // Drive init through the same path SillyTavern uses.
 const ready = handlers.get('APP_READY') || [];
 ok(ready.length >= 1, 'APP_READY handler registered at module scope');
+// A late wand menu must leave initialization retryable, not silently complete.
+byId.delete('extensionsMenu');
+console.log = logCap;
+for (const f of ready) f();
+console.log = realLog;
+ok(errors.some(x => x.includes('Extensions menu is not ready')), 'missing menu keeps init retryable');
+errors.length = 0;
+byId.set('extensionsMenu', extensionsMenu);
 console.log = logCap;
 try { for (const f of ready) f(); } catch (e) { errors.push('init threw: ' + (e && e.message)); }
 console.log = realLog;
@@ -200,6 +214,21 @@ const initErrors = errors.filter(x => x.includes('init failed'));
 ok(initErrors.length === 0, 'init completed without "init failed"' + (initErrors.length ? ' — ' + initErrors[0] : ''));
 ok(logs.some(x => x.includes('ready')), 'init logged ready (panel built, events bound, slash registered)');
 
+console.log('== menu opening ==');
+const menuItem = document.getElementById('chatassist_menu_item');
+const panel = document.getElementById('chatassist_panel');
+ok(!!menuItem && !!panel, 'menu and panel use real namespaced DOM ids');
+menuItem?.click();
+ok(panel?.classList.contains('cc_open'), 'menu click opens the full panel');
+menuItem?.click();
+ok(panel?.classList.contains('cc_open'), 'duplicate compatibility click leaves panel open');
+document.getElementById('chatassist_close')?.click();
+ok(!panel?.classList.contains('cc_open'), 'close button closes panel');
+for (const key of ['Enter', ' ']) {
+    menuItem?.dispatch('keydown', { key, preventDefault() {} });
+    ok(panel?.classList.contains('cc_open'), key + ' opens panel from keyboard');
+    document.getElementById('chatassist_close')?.click();
+}
 console.log('== event wiring ==');
 for (const e of ['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_SWIPED']) {
     ok((handlers.get(e) || []).length >= 1, e + ' handler bound');
@@ -335,9 +364,9 @@ ctx.ConnectionManagerRequestService = {
 };
 ctx.chatMetadata['continuityCopilot'] = { director: { text: 'OLD E2: the duel on the welcome-day grounds.', episode: 2, concluded: false, ts: 5 }, directorEp: 2 };
 for (const f of handlers.get('CHAT_CHANGED') || []) await f(); // refresh the label from the live directive
-ok(document.getElementById('cc_dirnew').textContent.includes('Restart'), 'with a live directive the button reads Restart');
+ok(document.getElementById('chatassist_dirnew').textContent.includes('Restart'), 'with a live directive the button reads Restart');
 console.log = logCap;
-try { document.getElementById('cc_dirnew').click(); await new Promise(r => setTimeout(r, 250)); } catch (e) { errors.push('restart click threw: ' + (e && e.message)); }
+try { document.getElementById('chatassist_dirnew').click(); await new Promise(r => setTimeout(r, 250)); } catch (e) { errors.push('restart click threw: ' + (e && e.message)); }
 console.log = realLog;
 ok(!errors.some(x => x.includes('restart click threw')), 'the New/Restart button ran without throwing');
 ok(capturedDraft && capturedDraft.sys.includes('The player RESTARTED this episode'), 'restart draft used the restart prompt contract, not the plain new-episode prompt');
@@ -351,7 +380,7 @@ ok(String(dR.text || '').includes('RESTARTED CUT'), 'the restarted directive rep
 // Label honesty: the same button must read Restart while a directive is live.
 ctx.chatMetadata['continuityCopilot'] = {};
 for (const f of handlers.get('CHAT_CHANGED') || []) await f(); // the real refresh path
-ok(document.getElementById('cc_dirnew').textContent.includes('New'), 'with no directive the same button reads New');
+ok(document.getElementById('chatassist_dirnew').textContent.includes('New'), 'with no directive the same button reads New');
 
 console.log('== v2.56.0 behavior: a hung provider cannot wedge the extension ==');
 // The reported symptom: one request never settles -> `running` held forever ->
@@ -367,11 +396,11 @@ ctx.ConnectionManagerRequestService = {
 ctx.chatMetadata['continuityCopilot'] = { director: { text: 'E2 live directive.', episode: 2, concluded: false, ts: 9 }, directorEp: 2 };
 for (const f of handlers.get('CHAT_CHANGED') || []) await f();
 console.log = logCap;
-document.getElementById('cc_dirnew').click();               // restart against the hung provider
+document.getElementById('chatassist_dirnew').click();               // restart against the hung provider
 await new Promise(r => setTimeout(r, 300));
 const busyDuringHang = true;                                 // op in flight; second click must be LOUD, not silent
 const toastsBefore = toasts.length;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 const gotBusyToast = toasts.length > toastsBefore && /Another operation is still running/.test(String(toasts[toasts.length - 1]));
 await new Promise(r => setTimeout(r, 1400));                 // let the 1s watchdog fire
 console.log = realLog;
@@ -387,7 +416,7 @@ ctx.ConnectionManagerRequestService = {
     },
 };
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await new Promise(r => setTimeout(r, 300));
 console.log = realLog;
 ok(String((ctx.chatMetadata['continuityCopilot'].director || {}).text || '').includes('HEALED CUT'), 'after the watchdog fired, the NEXT click succeeded — running was released, no reload needed');
@@ -416,14 +445,14 @@ ctx.ConnectionManagerRequestService = {
 };
 ctx.chatMetadata['continuityCopilot'] = { director: { text: 'E2 to restart with ticks.', episode: 2, concluded: false, ts: 11 }, directorEp: 2 };
 for (const f of handlers.get('CHAT_CHANGED') || []) await f();
-const logEl = document.getElementById('cc_log');
+const logEl = document.getElementById('chatassist_log');
 const snap = () => {
     const kids = (logEl && logEl.children) || [];
     for (const k of kids) if (k && k.className && String(k.className).includes('cc_busy') && k.textContent) bubbleSnapshots.push(k.textContent);
 };
 const snapIv = setInterval(snap, 25);
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(700);
 console.log = realLog;
 clearInterval(snapIv);
@@ -454,7 +483,7 @@ ctx.ConnectionManagerRequestService = {
     },
 };
 console.log = logCap;
-document.getElementById('cc_diroff').click();
+document.getElementById('chatassist_diroff').click();
 await sleep(400);
 console.log = realLog;
 ok(confirms.length > 0, 'End season asked for confirmation through the real dialog');
@@ -471,7 +500,7 @@ ctx.chat.push({ is_user: false, mes: 'Reply one under the plan.' });
 ctx.chat.push({ is_user: false, mes: 'Reply two under the plan.' });
 for (const f of handlers.get('CHAT_CHANGED') || []) await f();
 console.log = logCap;
-document.getElementById('cc_diroff').click();
+document.getElementById('chatassist_diroff').click();
 await sleep(400);
 console.log = realLog;
 ok(/PLAYED-STATE: PARTIALLY PLAYED \u2014 about 2 storyteller replies/.test(String(auditPrompt)), 'a half-played directive reports its real reply count to the audit');
@@ -495,7 +524,7 @@ ctx.ConnectionManagerRequestService = {
     },
 };
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(400);
 console.log = realLog;
 ok(potCalls.length === 2, 'exactly one recovery round was needed (got ' + potCalls.length + ' calls)');
@@ -742,7 +771,7 @@ CA.directorMode = 'off';
 CA.streaming = false;
 ctx.chatMetadata['continuityCopilot'] = { director: null, directorEp: 0 };
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(400);
 console.log = realLog;
 const w1 = wCalls.join(',');
@@ -754,7 +783,7 @@ ok(globalThis.__watcherSys.includes('MINIMAL CUT') && !globalThis.__watcherSys.i
 wCalls.length = 0; watcherReturn = ''; srReturn = 'Intensity: standard\nSHOWRUNNER CUT TWO: fallback proof.';
 ctx.chatMetadata['continuityCopilot'] = { director: null, directorEp: 0 };
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(400);
 console.log = realLog;
 const dW2 = String(((ctx.chatMetadata['continuityCopilot'] || {}).director || {}).text || '');
@@ -764,7 +793,7 @@ wCalls.length = 0; srReturn = 'Intensity: standard\nSHOWRUNNER CUT THREE: two-pa
 CA.directorWatcherPass = false;
 ctx.chatMetadata['continuityCopilot'] = { director: null, directorEp: 0 };
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(400);
 console.log = realLog;
 ok(wCalls.join(',') === 'directive,review' && String(((ctx.chatMetadata['continuityCopilot'] || {}).director || {}).text || '').includes('SHOWRUNNER CUT THREE'), 'watcher toggle off restores the exact two-pass contract');
@@ -773,7 +802,7 @@ wCalls.length = 0; watcherReturn = 'Intensity: standard\nWATCHER AIRED FOUR: the
 CA.directorWatcherPass = true;
 globalThis.__watcherSys = '';
 console.log = logCap;
-document.getElementById('cc_dirnew').click();
+document.getElementById('chatassist_dirnew').click();
 await sleep(400);
 console.log = realLog;
 ok(globalThis.__watcherSys.includes('This episode is a RESTART'), 'restart: the watcher is told the discarded directive never aired');
@@ -791,7 +820,7 @@ CA.critiqueAuto = 0;
 CA.critiqueOnEpisode = false;
 CA.directorInjectPaused = true;
 CA.critiqueInjectPaused = true;
-const ccLogText = () => (document.getElementById('cc_log').children || []).map(k => String(k.textContent || '') + String(k.innerHTML || ''));
+const ccLogText = () => (document.getElementById('chatassist_log').children || []).map(k => String(k.textContent || '') + String(k.innerHTML || ''));
 const clickFresh = (id) => {
     const b = document.getElementById(id);
     // Mock fidelity: the real DOM destroys and recreates these buttons on every
@@ -803,10 +832,10 @@ const clickFresh = (id) => {
 };
 const driveAsk = async (reply) => {
     ctx.ConnectionManagerRequestService = { sendRequest: async () => reply };
-    document.getElementById('cc_input').value = 'please fix this';
-    clickFresh('cc_send');
+    document.getElementById('chatassist_input').value = 'please fix this';
+    clickFresh('chatassist_send');
     await sleep(350);
-    clickFresh('cc_applyall');
+    clickFresh('chatassist_applyall');
     await sleep(350);
 };
 // Positive control: with NO drift, undo still restores exactly.
@@ -814,7 +843,7 @@ ctx.chat.length = 0;
 ctx.chat.push({ is_user: false, mes: 'The road was iron.' });
 await driveAsk('<edits>[{"id":0,"find":"iron","replace":"steel"}]</edits>');
 ok(ctx.chat[0].mes === 'The road was steel.', 'sim setup: chat edit applied through the real Apply-all path');
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(300);
 ok(ctx.chat[0].mes === 'The road was iron.', 'clean undo (no drift) still restores the pre-apply text exactly');
 // (a) Swipe drift.
@@ -823,7 +852,7 @@ ctx.chat.push({ is_user: true, mes: 'hi' }, { is_user: false, mes: 'The sword wa
 await driveAsk('<edits>[{"id":1,"find":"iron","replace":"steel"}]</edits>');
 ok(ctx.chat[1].mes === 'The sword was steel.', 'sim setup: second chat edit applied');
 ctx.chat[1].mes = 'The player rewrote this swipe entirely.';
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(300);
 ok(ctx.chat[1].mes === 'The player rewrote this swipe entirely.', 'undo-after-swipe: the player\u2019s newer text survived \u2014 the blind restore was refused');
 ok(ccLogText().some(t => /SKIPPED/.test(t) && /swipe \/ edit \/ reindex/.test(t)), 'undo-after-swipe: the refusal was loud and itemized in the panel');
@@ -833,7 +862,7 @@ ctx.chat.push({ is_user: false, mes: 'zero' }, { is_user: false, mes: 'one' }, {
 await driveAsk('<edits>[{"id":2,"find":"iron","replace":"steel"}]</edits>');
 ok(ctx.chat[2].mes === 'The gate was steel.', 'sim setup: third chat edit applied');
 ctx.chat.splice(0, 1);   // the user deleted message #0 \u2014 every later index shifts down
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(300);
 ok(ctx.chat.length === 2 && ctx.chat[0].mes === 'one' && ctx.chat[1].mes === 'The gate was steel.', 'undo-after-deletion: no message received stale text after the reindex');
 ok(ccLogText().some(t => /SKIPPED/.test(t) && /no longer exists/.test(t)), 'undo-after-deletion: the refusal was loud');
@@ -844,7 +873,7 @@ ctx.chatMetadata.summary_memory = 'The blade is iron.';
 await driveAsk('<memedits>[{"path":"summary_memory","find":"iron","replace":"steel"}]</memedits>');
 ok(String(ctx.chatMetadata.summary_memory) === 'The blade is steel.', 'sim setup: the memory edit applied');
 ctx.chatMetadata.summary_memory += '\n[Summaryception] a new beat was logged.';
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(300);
 ok(String(ctx.chatMetadata.summary_memory).includes('new beat was logged'), 'undo-after-external-write: the co-extension\u2019s newer memory survived');
 ok(ccLogText().some(t => /summary_memory/.test(t) && /changed since the apply/.test(t)), 'undo-after-external-write: the refusal named the drifted key');
@@ -860,7 +889,7 @@ await driveAsk('<wiedits>[{"book":"gatebook","uid":0,"find":"iron","replace":"st
 ok(String(wiStore.get('gatebook').entries['0'].content) === 'steel blade', 'sim setup: the worldbook edit applied');
 wiStore.get('gatebook').entries['0'].content = 'steel blade (polished by hand in the WI editor)';
 wiStore.get('gatebook').entries['1'] = { uid: 1, key: ['extra'], keysecondary: [], comment: 'Extra', content: 'user-added entry' };
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(300);
 const bookAfterUndo = wiStore.get('gatebook');
 ok(String(bookAfterUndo.entries['0'].content).includes('polished by hand') && !!bookAfterUndo.entries['1'], 'undo-after-WI-editor-edit: hand edits and user-added entries survived \u2014 the blind whole-book restore was refused');
@@ -875,17 +904,17 @@ let saveGate = null;
 ctx.saveWorldInfo = async (book, data) => { if (saveGate) await saveGate; wiStore.set(book, JSON.parse(JSON.stringify(data))); return true; };
 ctx.chat.length = 0;
 ctx.chat.push({ is_user: false, mes: 'story reply' });
-clickFresh('cc_dismissall');   // isolate: earlier sims returned their cards to pending
+clickFresh('chatassist_dismissall');   // isolate: earlier sims returned their cards to pending
 await sleep(50);
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<wiedits>[{"book":"racebook","new_entry":true,"comment":"Canon","content":"the duke is dead","keys":["duke"]}]</wiedits>' };
-document.getElementById('cc_input').value = 'add lore';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'add lore';
+clickFresh('chatassist_send');
 await sleep(350);
 let releaseSave;
 saveGate = new Promise(r => { releaseSave = r; });
-clickFresh('cc_applyall');
+clickFresh('chatassist_applyall');
 await sleep(60);            // first run is now parked inside the slow save
-clickFresh('cc_applyall');  // re-entrant click: must skip the claimed card, loudly
+clickFresh('chatassist_applyall');  // re-entrant click: must skip the claimed card, loudly
 await sleep(60);
 releaseSave();
 await sleep(350);
@@ -901,7 +930,7 @@ console.log('== v2.68.0 behavior: fuzzy memory anchors must be unique across ALL
 // path-scoped retry of the same anchor must apply precisely.
 ctx.chat.length = 0;
 ctx.chat.push({ is_user: false, mes: 'story reply' });
-clickFresh('cc_dismissall');
+clickFresh('chatassist_dismissall');
 await sleep(50);
 ctx.chatMetadata.summary_ledger = {
     jillian: { state: 'Jillian is at the academy library, studying wards.' },
@@ -940,16 +969,16 @@ let slow2;
 ctx.ConnectionManagerRequestService = { sendRequest: () => new Promise(r => { slow2 = () => r('ok'); }) };
 ctx.chat.length = 0;
 ctx.chat.push({ is_user: false, mes: 'story reply' });
-document.getElementById('cc_input').value = 'first question';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'first question';
+clickFresh('chatassist_send');
 await sleep(80);
-document.getElementById('cc_input').value = '';
+document.getElementById('chatassist_input').value = '';
 const toastsBeforeBusy = toasts.length;
-clickFresh('cc_audit');   // a send() entry point while running — must be loud + preserve text
+clickFresh('chatassist_audit');   // a send() entry point while running — must be loud + preserve text
 await sleep(50);
 ok(toasts.length > toastsBeforeBusy && /back in the box/.test(String(toasts[toasts.length - 1])), 'send() while busy is loud, not a silent drop');
-ok(String(document.getElementById('cc_input').value).length > 0, 'send() while busy parked the text back in the input box');
-document.getElementById('cc_input').value = '';
+ok(String(document.getElementById('chatassist_input').value).length > 0, 'send() while busy parked the text back in the input box');
+document.getElementById('chatassist_input').value = '';
 slow2();
 await sleep(300);
 
@@ -972,8 +1001,8 @@ ctx.ConnectionManagerRequestService = {
         return new Promise(r => { slowRelease = () => r('copilot answer'); });
     },
 };
-document.getElementById('cc_input').value = 'question while concluded';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'question while concluded';
+clickFresh('chatassist_send');
 await sleep(100);   // the copilot run now holds `running`
 for (const f of handlers.get('MESSAGE_RECEIVED') || []) await f(ctx.chat.length - 1);  // auto-direct skips: lock held
 ok(seq.join(',') === 'copilot', 'auto-direct skipped while the lock was held (only the copilot call fired)');
@@ -1034,11 +1063,11 @@ const realLoadWI = ctx.loadWorldInfo;
 ctx.loadWorldInfo = async (book) => {
     // The user hits Stop during the worldbook read — precisely the gap between the
     // round's stop-check and the next callLLM. This is the window the old code erased.
-    clickFresh('cc_send');
+    clickFresh('chatassist_send');
     return realLoadWI(book);
 };
-document.getElementById('cc_input').value = 'read the worldbook then answer';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'read the worldbook then answer';
+clickFresh('chatassist_send');
 await sleep(600);
 ctx.loadWorldInfo = realLoadWI;
 ok(stopRunCalls === 1, 'Stop during the inter-call gap prevented the next request (requests fired: ' + stopRunCalls + ', must be 1)');
@@ -1057,12 +1086,12 @@ const circular = { entries: {} };
 circular.entries.self = circular.entries;
 ctx.loadWorldInfo = async () => circular;
 const undoLogBefore = ccLogText().length;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ccLogText().slice(undoLogBefore).some(t => /batch was kept/.test(t)), 'the failed undo said so and kept the batch instead of swallowing it');
 ok(String(wiStore.get('gatebook').entries['0'].content).includes('steel'), 'the failed undo changed nothing');
 ctx.loadWorldInfo = realLoadWI;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(String(wiStore.get('gatebook').entries['0'].content).includes('iron'), 'pressing Undo again after the failure restored the pre-apply worldbook');
 ok(!ccLogText().slice(undoLogBefore).some(t => /Nothing to undo/.test(t)), 'the batch was never lost — the retry found it on the stack');
@@ -1091,12 +1120,12 @@ CA.critiqueInjectPaused = false;
 ctx.chatMetadata['continuityCopilot'] = { director: { text: 'BEATS', episode: 1, concluded: false, ts: 1 }, directorEp: 1 };
 ctx.chatMetadata.cc_critique = 'NORTH STAR: sharpen it.';
 const setNum = (id, v) => { document.getElementById(id).value = v; };
-const saveSettings = () => { clickFresh('cc_saveset'); CA.profileId = 'gate-profile'; };
+const saveSettings = () => { clickFresh('chatassist_saveset'); CA.profileId = 'gate-profile'; };
 
 // (a) A deliberate 0 must survive. Depth 0 = inject directly above the reply;
 // the UI declares min="0", so refusing it was the UI lying to the user.
-setNum('cc_dir_depth', '0'); setNum('cc_crit_depth', '0');
-setNum('cc_llm_timeout', '0'); setNum('cc_think_retries', '0');
+setNum('chatassist_dir_depth', '0'); setNum('chatassist_crit_depth', '0');
+setNum('chatassist_llm_timeout', '0'); setNum('chatassist_think_retries', '0');
 saveSettings();
 ok(CA.directorDepth === 0, 'a typed director depth of 0 is stored as 0 (got ' + JSON.stringify(CA.directorDepth) + ')');
 ok(CA.critiqueDepth === 0, 'a typed critique depth of 0 is stored as 0 (got ' + JSON.stringify(CA.critiqueDepth) + ')');
@@ -1117,9 +1146,9 @@ ok(cDepth === 0, 'the editor injection really lands at depth 0 (got ' + JSON.str
 // (b) A CLEARED box is "unset", not 0 — it must fall back to the default. The
 // pre-2.71 read turned an empty stall-timeout box into 0, silently switching OFF
 // the watchdog that stops one hung request from wedging every button.
-setNum('cc_dir_depth', ''); setNum('cc_crit_depth', '');
-setNum('cc_llm_timeout', ''); setNum('cc_think_retries', '');
-setNum('cc_recent', ''); setNum('cc_rounds', ''); setNum('cc_maxtok', '');
+setNum('chatassist_dir_depth', ''); setNum('chatassist_crit_depth', '');
+setNum('chatassist_llm_timeout', ''); setNum('chatassist_think_retries', '');
+setNum('chatassist_recent', ''); setNum('chatassist_rounds', ''); setNum('chatassist_maxtok', '');
 saveSettings();
 ok(CA.llmTimeoutSec === 300, 'clearing the stall-timeout box restores the default, it does NOT disable the watchdog (got ' + JSON.stringify(CA.llmTimeoutSec) + ')');
 ok(CA.thinkRetries === 2, 'clearing the retries box restores the default, it does NOT disable auto-recovery (got ' + JSON.stringify(CA.thinkRetries) + ')');
@@ -1127,14 +1156,14 @@ ok(CA.directorDepth === 3 && CA.critiqueDepth === 8, 'clearing the depth boxes r
 ok(CA.recentFull === 8 && CA.fetchRounds === 3 && CA.maxTokens === 8192, 'clearing the context boxes restores their defaults (got ' + CA.recentFull + '/' + CA.fetchRounds + '/' + CA.maxTokens + ')');
 
 // (c) Garbage falls back; out-of-range clamps to the UI's declared bounds.
-setNum('cc_dir_depth', 'abc'); setNum('cc_crit_depth', '999'); setNum('cc_maxtok', '99999');
+setNum('chatassist_dir_depth', 'abc'); setNum('chatassist_crit_depth', '999'); setNum('chatassist_maxtok', '99999');
 saveSettings();
 ok(CA.directorDepth === 3, 'garbage in a numeric box falls back to the default (got ' + JSON.stringify(CA.directorDepth) + ')');
 ok(CA.critiqueDepth === 30, 'an over-range value clamps to the UI max (got ' + JSON.stringify(CA.critiqueDepth) + ')');
 ok(CA.maxTokens === 32768, 'an over-range token budget clamps to the provider ceiling (got ' + JSON.stringify(CA.maxTokens) + ')');
-setNum('cc_dir_depth', '3'); setNum('cc_crit_depth', '8'); setNum('cc_maxtok', '8192');
-setNum('cc_llm_timeout', '300'); setNum('cc_think_retries', '2');
-setNum('cc_recent', '8'); setNum('cc_rounds', '3');
+setNum('chatassist_dir_depth', '3'); setNum('chatassist_crit_depth', '8'); setNum('chatassist_maxtok', '8192');
+setNum('chatassist_llm_timeout', '300'); setNum('chatassist_think_retries', '2');
+setNum('chatassist_recent', '8'); setNum('chatassist_rounds', '3');
 saveSettings();
 
 console.log('== v2.71.0 invariants: an undo record matches the granularity of its edit ==');
@@ -1160,7 +1189,7 @@ await driveAsk('<memedits>[{"path":"continuityCopilot.director.text","replace":"
 ok(ctx.chatMetadata['continuityCopilot'].director.text === 'REWRITTEN BEATS', 'sim setup: the directive edit applied through the real Apply-all path');
 const histBeforeUndo = (ctx.chatMetadata['continuityCopilot'].sessions[0].history || []).length;
 const logAt71 = ccLogText().length;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ctx.chatMetadata['continuityCopilot'].director.text === 'ORIGINAL BEATS', 'undo restored the directive text (got ' + JSON.stringify(ctx.chatMetadata['continuityCopilot'].director.text) + ')');
 ok(!ccLogText().slice(logAt71).some(t => /SKIPPED/.test(t)), 'the undo did not falsely blame drift on our own receipt line');
@@ -1173,7 +1202,7 @@ ctx.chatMetadata.summaryception = { ledger: 'Jillian is at the academy.', thread
 await driveAsk('<memedits>[{"path":"summaryception.ledger","find":"at the academy","replace":"on the train"}]</memedits>');
 ok(ctx.chatMetadata.summaryception.ledger.includes('on the train'), 'sim setup: the memory edit applied');
 ctx.chatMetadata.summaryception.threads = 'thread one\nthread two (written by the memory extension after the apply)';
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ctx.chatMetadata.summaryception.ledger.includes('at the academy'), 'undo restored the edited field despite a sibling write under the same root');
 ok(ctx.chatMetadata.summaryception.threads.includes('thread two'), 'the co-extension\u2019s sibling write SURVIVED the undo (a root-scoped restore would have eaten it)');
@@ -1181,13 +1210,13 @@ ok(ctx.chatMetadata.summaryception.threads.includes('thread two'), 'the co-exten
 // (c) Drift on the edited field itself is still refused, loudly, with nothing
 // overwritten. Cards a previous undo returned to pending must be cleared first,
 // or Apply-all folds them into this batch and it is no longer fully-refused.
-const dismissPending = () => { const b = document.getElementById('cc_dismissall'); if (b) clickFresh('cc_dismissall'); };
+const dismissPending = () => { const b = document.getElementById('chatassist_dismissall'); if (b) clickFresh('chatassist_dismissall'); };
 dismissPending();
 await driveAsk('<memedits>[{"path":"summaryception.ledger","find":"at the academy","replace":"in the infirmary"}]</memedits>');
 ok(ctx.chatMetadata.summaryception.ledger.includes('in the infirmary'), 'sim setup: the second memory edit applied');
 ctx.chatMetadata.summaryception.ledger = 'Jillian is in the infirmary, and someone else edited this line.';
 const logAtDrift = ccLogText().length;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ctx.chatMetadata.summaryception.ledger.includes('someone else edited this line'), 'a drifted field is not overwritten by a stale snapshot');
 const driftLines = ccLogText().slice(logAtDrift);
@@ -1202,7 +1231,7 @@ await driveAsk('<memedits>[{"path":"summaryception.ledger","find":"at the academ
 ok(ctx.chatMetadata.summaryception.ledger.includes('on the train'), 'sim setup: the third memory edit applied');
 delete ctx.chatMetadata.summaryception;
 const logAtGone = ccLogText().length;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ctx.chatMetadata.summaryception === undefined, 'a root the user deleted is NOT resurrected by an undo');
 ok(ccLogText().slice(logAtGone).some(t => /no longer exists at that path/.test(t)), 'the vanished path is refused by name');
@@ -1216,7 +1245,7 @@ await driveAsk('<memedits>[{"path":"summaryception.ledger","find":"at the academ
 ok(ctx.chatMetadata.summaryception.ledger.includes('on the train') && ctx.chatMetadata['continuityCopilot'].director.text === 'REWRITTEN', 'sim setup: both fields of the mixed batch applied');
 ctx.chatMetadata.summaryception.ledger = 'externally rewritten since the apply';
 const logAtMixed = ccLogText().length;
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 const mixedLines = ccLogText().slice(logAtMixed);
 ok(ctx.chatMetadata['continuityCopilot'].director.text === 'ORIGINAL BEATS', 'the restorable field of a mixed batch was restored');
@@ -1232,7 +1261,7 @@ ctx.chatMetadata.summaryception = { ledger: { chars: [{ name: 'Jillian', state: 
 await driveAsk('<memedits>[{"find":"waits at the academy gate","replace":"waits at the duel field"}]</memedits>');
 ok(ctx.chatMetadata.summaryception.ledger.chars[0].state.includes('duel field'), 'sim setup: a deeply nested array field was edited via memory-wide search');
 ctx.chatMetadata.summaryception.ledger.chars[1].state = 'Silas trains with the registrar.';   // co-extension writes a SIBLING array element
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(ctx.chatMetadata.summaryception.ledger.chars[0].state.includes('academy gate'), 'undo restored the exact nested array element it edited');
 ok(ctx.chatMetadata.summaryception.ledger.chars[1].state.includes('registrar'), 'the sibling array element written after the apply survived the undo');
@@ -1243,7 +1272,7 @@ dismissPending();
 delete ctx.chatMetadata.note_prompt;
 await driveAsk('<memedits>[{"path":"note_prompt","replace":"Keep the tone dry."}]</memedits>');
 ok(ctx.chatMetadata.note_prompt === 'Keep the tone dry.', 'sim setup: writing to an absent note_prompt created it');
-clickFresh('cc_undo');
+clickFresh('chatassist_undo');
 await sleep(400);
 ok(!Object.prototype.hasOwnProperty.call(ctx.chatMetadata, 'note_prompt'), 'undo removed the key the apply created, rather than leaving an empty string behind');
 
@@ -1268,8 +1297,8 @@ const capture = (reply) => ({ sendRequest: async (pid, messages) => { captured.p
 
 captured = [];
 ctx.ConnectionManagerRequestService = capture('nothing to fix');
-document.getElementById('cc_input').value = 'read it';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'read it';
+clickFresh('chatassist_send');
 await sleep(350);
 const ctxSent = captured.join('\n');
 ok(ctxSent.includes(BIG_TAIL), 'a 20k-char message reaches the model with its REAL ending intact (the 8000-char silent clip is gone)');
@@ -1281,8 +1310,8 @@ ok(ctxSent.includes('COMPLETE means COMPLETE'), 'the non-editable message-text c
 CA.fullTextCap = 5000;
 captured = [];
 ctx.ConnectionManagerRequestService = capture('ok');
-document.getElementById('cc_input').value = 'read it again';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'read it again';
+clickFresh('chatassist_send');
 await sleep(350);
 const capped = captured.join('\n');
 ok(capped.includes('PART 1 OF ' + Math.ceil(bigMes.length / 5000) + ' (chars 1\u20135000 of ' + bigMes.length + '), INCOMPLETE'), 'an over-cap message is served as a numbered PART with exact character bounds');
@@ -1294,8 +1323,8 @@ ok(/<fetch>\["0#2"\]<\/fetch>/.test(capped), 'the banner hands the model the exa
 captured = [];
 let turn = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { captured.push(messages.map(m => String(m.content || '')).join('\n')); return (turn++ === 0) ? '<fetch>["0#5"]</fetch>' : 'done'; } };
-document.getElementById('cc_input').value = 'get the end';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'get the end';
+clickFresh('chatassist_send');
 await sleep(500);
 ok(captured.join('\n').includes(BIG_TAIL), 'a part fetch ("0#5") serves the final slice, so the true ending is reachable under a cap');
 CA.fullTextCap = 0;
@@ -1309,8 +1338,8 @@ captured = [];
 turn = 0;
 const wanted = JSON.stringify(Array.from({ length: 35 }, (_, i) => i));
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { captured.push(messages.map(m => String(m.content || '')).join('\n')); return (turn++ === 0) ? ('<fetch>' + wanted + '</fetch>') : 'done'; } };
-document.getElementById('cc_input').value = 'read a lot';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'read a lot';
+clickFresh('chatassist_send');
 await sleep(500);
 const served = captured.join('\n');
 ok(/id\(s\) in that request were NOT served/.test(served), 'over-cap fetch ids are reported back instead of silently dropped');
@@ -1343,8 +1372,8 @@ ctx.chat.push({ is_user: false, name: 'N', mes: BROKEN });
 
 captured = [];
 ctx.ConnectionManagerRequestService = capture('WINDOW CLEAN');
-document.getElementById('cc_input').value = '#m structure';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m structure';
+clickFresh('chatassist_send');
 await sleep(700);
 const flags = captured.join('\n');
 const scanLog = ccLogText().join('\n');
@@ -1379,8 +1408,8 @@ ctx.ConnectionManagerRequestService = {
         passes.push('other'); return 'x';
     },
 };
-document.getElementById('cc_input').value = '#m';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m';
+clickFresh('chatassist_send');
 await sleep(1400);
 const windows = [...new Set(passes.filter(p => p.indexOf('continuity:') === 0))];
 ok(windows.length === 3, 'the continuity pass walked the WHOLE 12-message log in 4-message windows (got ' + windows.length + ': ' + windows.join(' ') + ')');
@@ -1389,15 +1418,15 @@ ok(/Deep audit complete — \d+ model call\(s\)/.test(ccLogText().join('\n').rep
 ok(!passes.includes('other'), 'every audit call carried one of the four pass contracts');
 const auditLog = ccLogText().join('\n');
 ok(/Deep audit complete/.test(auditLog), 'the audit ends with a consolidated verdict');
-ok((document.getElementById('cc_cards') ? true : true) && ccLogText().join('\n').includes('CONTINUITY'), 'window findings are reported in the transcript');
+ok((document.getElementById('chatassist_cards') ? true : true) && ccLogText().join('\n').includes('CONTINUITY'), 'window findings are reported in the transcript');
 
 console.log('== v2.72.0: routing, contract and stored-default migrations ==');
 ok(/^#m\b/.test('#m from 180') && !/^#m\b/.test('#memory audit'), 'the #m route cannot swallow a longer tag like #memory');
 CA.systemPrompt = 'MY OWN CUSTOM PROMPT. USER_EDIT_RULE';
 captured = [];
 ctx.ConnectionManagerRequestService = capture('ok');
-document.getElementById('cc_input').value = 'hello';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'hello';
+clickFresh('chatassist_send');
 await sleep(350);
 ok(captured.join('\n').includes('COMPLETE means COMPLETE'), 'the completeness contract survives a fully CUSTOMIZED system prompt (it lives outside the editable one)');
 CA.systemPrompt = SRC.match(/const LEGACY_SYSTEM_PROMPT_V271 = /) ? CA.systemPrompt : CA.systemPrompt;
@@ -1421,8 +1450,8 @@ ctx.chat.push({ is_user: false, name: 'N', mes: shaped('Rising', true) });
 ctx.chat.push({ is_user: false, name: 'N', mes: shaped('', false) });   // the drifted one
 captured = [];
 ctx.ConnectionManagerRequestService = capture('noted');
-document.getElementById('cc_input').value = '#m structure';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m structure';
+clickFresh('chatassist_send');
 await sleep(700);
 const shapeFlags = captured.join('\n');
 ok(/field-shape/.test(shapeFlags) && /MISSING: Scene Pacing/.test(shapeFlags), 'a block missing a field the other scenes all carry is flagged by name');
@@ -1437,8 +1466,8 @@ ctx.chat.push({ is_user: false, name: 'N', mes: shaped('Slow Burn', true) });
 ctx.chat.push({ is_user: false, name: 'N', mes: shaped('', false) });
 captured = [];
 ctx.ConnectionManagerRequestService = capture('noted');
-document.getElementById('cc_input').value = '#m structure';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m structure';
+clickFresh('chatassist_send');
 await sleep(700);
 ok(!/field-shape/.test(captured.join('\n')), 'with only two agreeing scenes, shape drift is NOT reported (no norm established yet)');
 
@@ -1453,14 +1482,14 @@ ctx.ConnectionManagerRequestService = {
         const all = messages.map(m => String(m.content || '')).join('\n');
         if (all.includes('PASS 2 of 4')) {
             contCalls++;
-            if (contCalls === 2) { const b = document.getElementById('cc_send'); if (b) b.click(); }   // Stop, mid-sweep
+            if (contCalls === 2) { const b = document.getElementById('chatassist_send'); if (b) b.click(); }   // Stop, mid-sweep
             return 'WINDOW CLEAN';
         }
         return 'ok';
     },
 };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(1500);
 const cursor = ((ctx.chatMetadata['continuityCopilot'] || {}).audit || {}).cursor;
 ok(contCalls < 5, 'Stop actually halted the sweep instead of running every window (' + contCalls + ' windows ran)');
@@ -1468,8 +1497,8 @@ ok(cursor > 0, 'the resume point was persisted to chat metadata (cursor #' + cur
 ok(/resumes from #/.test(ccLogText().join('\n')), 'the user is told exactly where the next run picks up');
 contCalls = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { const all = messages.map(m => String(m.content || '')).join('\n'); if (all.includes('PASS 2 of 4')) { contCalls++; } return 'WINDOW CLEAN'; } };
-document.getElementById('cc_input').value = '#m';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m';
+clickFresh('chatassist_send');
 await sleep(1500);
 ok(contCalls === Math.ceil((20 - cursor) / 4), 'the next run resumed from the saved cursor rather than re-auditing from #0 (' + contCalls + ' windows)');
 ok(/Resuming the continuity sweep from #/.test(ccLogText().join('\n')), 'the resume is announced, not silent');
@@ -1494,8 +1523,8 @@ ctx.ConnectionManagerRequestService = {
         return 'ok';
     },
 };
-document.getElementById('cc_input').value = 'fix the end of it';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the end of it';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(/Auto-fetched #0/.test(ccLogText().join('\n')), 'an edit proposed off a PART triggers the auto-fetch instead of being staged blind');
 CA.fullTextCap = 0;
@@ -1529,8 +1558,8 @@ ctx.ConnectionManagerRequestService = {
         return 'WINDOW CLEAN';
     },
 };
-document.getElementById('cc_input').value = '#m';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m';
+clickFresh('chatassist_send');
 await sleep(1500);
 const passes4 = ['1', '2', '3', '4'];
 ok(passes4.every(k => seenByPass[k] && seenByPass[k].includes('[AUDITOR DOCTRINE')), 'all four audit passes carry the auditor doctrine');
@@ -1549,8 +1578,8 @@ dismissPending();
 let optSeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { optSeen = messages.map(m => String(m.content || '')).join('\n'); return 'Estimated 4100 -> 3600 chars.\n<memedits>[{"find":"Jillian rode to the keep.","replace":"Jillian rode to the keep."}]</memedits>'; } };
 const memBefore = ctx.chatMetadata.summary_memory;
-document.getElementById('cc_input').value = '#opt';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#opt';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(/ZERO-LOSS VERIFICATION/.test(optSeen) && /4-question test/.test(optSeen), '#opt carries the zero-loss contract and the 4-question test');
 ok(/SEQUENTIAL AGGREGATION/.test(optSeen) && /NOTATION COMPRESSION last/.test(optSeen), 'the eight techniques ship in order, first and last both present');
@@ -1561,8 +1590,8 @@ ok(/nothing has changed yet/.test(ccLogText().join('\n')), 'the verdict says so 
 dismissPending();
 let clSeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { clSeen = messages.map(m => String(m.content || '')).join('\n'); return 'Throughline: a squire becomes a threat.'; } };
-document.getElementById('cc_input').value = '#cl';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#cl';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(/SPINE/.test(clSeen) && /SUPPORT/.test(clSeen) && /TEXTURE/.test(clSeen) && /NOISE/.test(clSeen), '#cl carries the four-way manifest classification');
 ok(/cold-read test/.test(clSeen) && /motivation check/.test(clSeen), '#cl runs the director\u2019s read before any manifest');
@@ -1603,8 +1632,8 @@ ctx.ConnectionManagerRequestService = {
         return 'ok';
     },
 };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(1800);
 ok(winIds.length === 2, 'the sweep ran 2 windows for 8 visible messages, not 5 for all 20 (got ' + winIds.length + ': ' + winIds.join(' ') + ')');
 ok(winIds.join(' ') === '12-15 16-19', 'every window is built from VISIBLE ids only (got ' + winIds.join(' ') + ')');
@@ -1627,8 +1656,8 @@ ctx.ConnectionManagerRequestService = {
         return 'WINDOW CLEAN';
     },
 };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(1800);
 ok(pass4Ran === 0, 'a memory with no doubts costs zero verification calls (got ' + pass4Ran + ')');
 ok(/Nothing to verify/.test(ccLogText().join('\n')), 'and it says so rather than silently skipping a pass');
@@ -1640,15 +1669,15 @@ ctx.chat.push({ is_user: false, name: 'N', mes: '<details>\n<summary>Tracker</su
 ctx.chat.push({ is_user: false, name: 'N', mes: 'A visible scene, nothing wrong with it.' });
 let structCalls = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { if (messages.map(m => String(m.content || '')).join('\n').includes('PASS 1 of 4')) structCalls++; return 'ok'; } };
-document.getElementById('cc_input').value = '#m structure';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m structure';
+clickFresh('chatassist_send');
 await sleep(800);
 ok(structCalls === 0, 'a ghosted fault spends no model call by default (got ' + structCalls + ')');
 ok(/1 of them ghosted — listed, not repaired/.test(ccLogText().join('\n')), 'but it is still reported, with the way to repair it');
 dismissPending();
 structCalls = 0;
-document.getElementById('cc_input').value = '#m structure ghosted';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m structure ghosted';
+clickFresh('chatassist_send');
 await sleep(800);
 ok(structCalls === 1, '"#m structure ghosted" repairs it on request (got ' + structCalls + ')');
 
@@ -1660,8 +1689,8 @@ CA.auditWindow = 2;
 CA.auditMaxCalls = 5;
 let budgetCalls = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async () => { budgetCalls++; return 'WINDOW CLEAN'; } };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(2500);
 ok(budgetCalls <= 6, 'the budget stopped the run instead of walking all 30 windows (got ' + budgetCalls + ')');
 ok(/Call budget reached \(5\)/.test(ccLogText().join('\n')), 'the pause is announced with the number that caused it');
@@ -1697,8 +1726,8 @@ ctx.ConnectionManagerRequestService = {
         return 'WINDOW CLEAN';
     },
 };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(2200);
 ok(memCalls.length > 1, 'the memory was large enough to need several sections (' + memCalls.length + ')');
 ok(memCalls.every(c => /\[MEMORY SPINE — every entry in story order/.test(c)), 'EVERY section call carries the spine block — the index of all the entries it is not holding');   // the prompt text alone mentions [MEMORY SPINE], so match the injected block header
@@ -1717,8 +1746,8 @@ ctx.chatMetadata.summary_memory = '--- big ---\n' + longLine + '\n' + entry(1, 0
 const chunkCalls = [];
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { const all = messages.map(m => String(m.content || '')).join('\n'); if (all.includes('PASS 3 of 4')) chunkCalls.push(all); return 'MEMORY CONSISTENT'; } };
 dismissPending();
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(2200);
 ok(chunkCalls.some(c => c.includes('X'.repeat(30000) + ' END_OF_ENTRY_MARKER')), 'an over-budget entry is delivered WHOLE rather than sliced at a character count');
 
@@ -1735,8 +1764,8 @@ const bad = [
 ctx.chatMetadata.summary_memory = '--- ordering ---\n' + bad.join('\n');
 let orderSeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { const all = messages.map(m => String(m.content || '')).join('\n'); if (all.includes('PASS 3 of 4')) orderSeen = all; return 'MEMORY CONSISTENT'; } };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(1800);
 ok(/range-overlap/.test(orderSeen), 'overlapping coverage is flagged (the same events recorded twice)');
 ok(/out-of-order/.test(orderSeen), 'an entry covering earlier messages than the one before it is flagged');
@@ -1751,8 +1780,8 @@ dismissPending();
 ctx.chatMetadata.summary_memory = '--- clean ---\n' + [entry(1, 0, 3), entry(2, 4, 7), entry(3, 8, 11)].join('\n');
 let crossRan = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { const all = messages.map(m => String(m.content || '')).join('\n'); if (all.includes('PASS 3b')) crossRan++; return all.includes('PASS 3 of 4') ? 'MEMORY CONSISTENT' : 'WINDOW CLEAN'; } };
-document.getElementById('cc_input').value = '#m restart';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m restart';
+clickFresh('chatassist_send');
 await sleep(1800);
 ok(crossRan === 0, 'a memory that fits in ONE section needs no cross-section pass and is not charged for one');
 ok(/coverage runs forward, no overlaps or duplicates/.test(ccLogText().join('\n')), 'a clean ordering is reported as a positive result, not silence');
@@ -1781,8 +1810,8 @@ ctx.ConnectionManagerRequestService = {
         return 'Corrected.\n<edits>[{"id":0,"find":"crossed the yard at dusk","replace":"crossed the yard at dawn","reason":"fixed"}]</edits>';
     },
 };
-document.getElementById('cc_input').value = 'fix the time of day';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the time of day';
+clickFresh('chatassist_send');
 await sleep(900);
 // The log carries both textContent and innerHTML, so quotes appear HTML-escaped:
 // match the stable prose, not the punctuation around it.
@@ -1805,8 +1834,8 @@ ctx.ConnectionManagerRequestService = {
     // dismissed card is correctly suppressed, which would prove nothing here.
     sendRequest: async () => { goodRounds++; return '<edits>[{"id":0,"find":"said nothing to the guard","replace":"said nothing to the sentry","reason":"ok"}]</edits>'; },
 };
-document.getElementById('cc_input').value = 'fix it again';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix it again';
+clickFresh('chatassist_send');
 await sleep(700);
 ok(goodRounds === 1, 'a valid anchor costs no extra round (got ' + goodRounds + ')');
 // goodRounds === 1 above is the real proof no correction round fired; what matters
@@ -1826,8 +1855,8 @@ ctx.ConnectionManagerRequestService = {
         return 'MEMORY CONSISTENT';
     },
 };
-document.getElementById('cc_input').value = 'fix the memory line';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the memory line';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(memSeen.length >= 2 && /that exact text does not occur anywhere in the memory/.test(memSeen[1]), 'an invented memory anchor is caught against the live memory');
 
@@ -1844,16 +1873,16 @@ ctx.chat.length = 0;
 ctx.chat.push({ is_user: false, name: 'N', mes: 'A scene that is not being edited here.' });
 ctx.chatMetadata.summary_memory = 'ALPHA line: the queen crossed the yard at dusk.\nGAMMA line: the steward counted the ravens.';
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<memedits>[{"find":"ALPHA line: the queen crossed the yard at dusk.","replace":"ALPHA line: the queen crossed the yard at dawn.","reason":"first try"}]</memedits>' };
-document.getElementById('cc_input').value = 'fix the alpha line';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the alpha line';
+clickFresh('chatassist_send');
 await sleep(700);
 const skipsBefore = skipNotes();
 
 // The memory drifts underneath the staged card: its anchor is now unfindable.
 ctx.chatMetadata.summary_memory = 'BETA line: the queen crossed the courtyard at dusk.\nGAMMA line: the steward counted the ravens.';
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<memedits>[{"find":"BETA line: the queen crossed the courtyard at dusk.","replace":"BETA line: the queen crossed the courtyard at dawn.","reason":"corrected anchor"}]</memedits>' };
-document.getElementById('cc_input').value = 'try again against the current memory';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'try again against the current memory';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(skipNotes() > skipsBefore, 'a corrected proposal retires the dead card automatically — no hand dismissal (' + skipsBefore + ' -> ' + skipNotes() + ')');
 ok(/anchor no longer matches/i.test(ccLogText().join('\n')) || /older duplicate\(s\) auto-skipped/i.test(ccLogText().join('\n')), 'and the reason is stated rather than the card just vanishing');
@@ -1863,13 +1892,13 @@ ok(/anchor no longer matches/i.test(ccLogText().join('\n')) || /older duplicate\
 dismissPending();
 ctx.chatMetadata.summary_memory = 'ALPHA line: the queen crossed the yard at dusk.\nGAMMA line: the steward counted the ravens.';
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<memedits>[{"find":"ALPHA line: the queen crossed the yard at dusk.","replace":"ALPHA line: the queen crossed the yard at dawn.","reason":"still valid"}]</memedits>' };
-document.getElementById('cc_input').value = 'fix alpha';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix alpha';
+clickFresh('chatassist_send');
 await sleep(700);
 const skipsBefore2 = skipNotes();
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<memedits>[{"find":"GAMMA line: the steward counted the ravens.","replace":"GAMMA line: the steward counted the ravens twice.","reason":"different line"}]</memedits>' };
-document.getElementById('cc_input').value = 'now fix gamma too';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'now fix gamma too';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(skipNotes() === skipsBefore2, 'a pending fix whose anchor is still good is NOT retired by an unrelated new proposal (' + skipsBefore2 + ' -> ' + skipNotes() + ')');
 
@@ -1902,8 +1931,8 @@ ctx.ConnectionManagerRequestService = {
         return 'Swept everywhere.\n<edits>[{"id":1,"find":"remembered Two-fourteen as","replace":"remembered Two-thirty-eight as","reason":"same class"}]</edits>\n<memedits>[{"find":"the bell rang at Two-fourteen.","replace":"the bell rang at Two-thirty-eight.","reason":"snippet"},{"find":"STATE: waiting since Two-fourteen.","replace":"STATE: waiting since Two-thirty-eight.","reason":"ledger"}]</memedits>';
     },
 };
-document.getElementById('cc_input').value = 'the bell time is wrong, fix it';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'the bell time is wrong, fix it';
+clickFresh('chatassist_send');
 await sleep(1100);
 const rippleLog = ccLogText().join('\n');
 ok(/Ripple check: the corrected text still appears in 3 other place\(s\)/.test(rippleLog), 'the leftovers are counted in code before anything is staged');
@@ -1921,8 +1950,8 @@ CA.systemPrompt = 'MY OWN CUSTOM PROMPT. USER_EDIT_RULE';
 let lawSeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { lawSeen = messages.map(m => String(m.content || '')).join('\n'); return 'ok'; } };
 dismissPending();
-document.getElementById('cc_input').value = 'hello';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'hello';
+clickFresh('chatassist_send');
 await sleep(500);
 ok(lawSeen.includes('ONE FACT, EVERY SURFACE'), 'the law survives a fully customized system prompt');
 delete CA.systemPrompt;
@@ -1935,8 +1964,8 @@ ctx.chatMetadata.summary_memory = 'nothing relevant here';
 ctx.chatMetadata.summary_ledger = 'nothing relevant here either';
 let oneShot = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async () => { oneShot++; return '<edits>[{"id":0,"find":"a UNIQUEPHRASE in","replace":"a REPLACEDPHRASE in","reason":"only occurrence"}]</edits>'; } };
-document.getElementById('cc_input').value = 'fix the unique phrase';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the unique phrase';
+clickFresh('chatassist_send');
 await sleep(700);
 ok(oneShot === 1, 'a fix with no leftovers anywhere costs no extra round (got ' + oneShot + ')');
 
@@ -1949,8 +1978,8 @@ for (let i = 0; i < 30; i++) ctx.chat.push({ is_user: false, name: 'N', mes: 'Se
 let manyCalls = 0;
 let manySeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { manyCalls++; manySeen = messages.map(m => String(m.content || '')).join('\n'); return '<edits>[{"id":29,"find":"Ser Kettleblack stood","replace":"Ser Osmund stood","reason":"renamed"}]</edits>'; } };   // #29 is inside the full-text window, so the blind-edit fetch is not in play
-document.getElementById('cc_input').value = 'rename the knight';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'rename the knight';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(manyCalls === 2, 'a rename spanning 30 messages DOES raise the sweep — that is the case it exists for (got ' + manyCalls + ' calls)');
 ok(/29 untouched/.test(manySeen) || /leaving 29 untouched/.test(manySeen), 'the count of untouched instances is exact');
@@ -1982,8 +2011,8 @@ ctx.ConnectionManagerRequestService = {
         return '<memedits>[{"find":"the cook burned the stew at noon.","replace":"the cook burned the stew at dusk.","reason":"wrong time"}]</memedits>';
     },
 };
-document.getElementById('cc_input').value = 'the stew time is wrong';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'the stew time is wrong';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(/proposed memory edits below/.test(ccLogText().slice(-3).join(' ')), 'a withdrawable card is staged first');
 
@@ -1998,8 +2027,8 @@ ctx.ConnectionManagerRequestService = {
         return 'Re-checked the memory \u2014 another edit already covered it, so the staged fix is moot.\n<supersede>' + (lm ? lm[1] : 'Memory fix 1') + '</supersede>';
     },
 };
-document.getElementById('cc_input').value = 'actually it is already covered';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'actually it is already covered';
+clickFresh('chatassist_send');
 await sleep(900);
 const wLog = ccLogText().join('\n');
 ok((wLog.match(/the assistant withdrew/gi) || []).length > withdrewBefore, 'a supersede block with NO replacement withdraws the dead card — and the note says "withdrew", not "replaced"');
@@ -2015,8 +2044,8 @@ ctx.ConnectionManagerRequestService = {
         return '<memedits>[{"find":"the cook burned the stew at noon.","replace":"the cook burned the stew at dusk.","reason":"staged again"}]</memedits>';
     },
 };
-document.getElementById('cc_input').value = 'stage the stew fix again';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'stage the stew fix again';
+clickFresh('chatassist_send');
 await sleep(900);
 withdrewBefore = (ccLogText().join('\n').match(/the assistant withdrew/gi) || []).length;
 ctx.ConnectionManagerRequestService = {
@@ -2027,8 +2056,8 @@ ctx.ConnectionManagerRequestService = {
         return 'Withdrawing it.\n<supersede>memory  fix #' + (lm ? lm[1] : '1') + '</supersede>';
     },
 };
-document.getElementById('cc_input').value = 'never mind, withdraw it';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'never mind, withdraw it';
+clickFresh('chatassist_send');
 await sleep(900);
 ok((ccLogText().join('\n').match(/the assistant withdrew/gi) || []).length > withdrewBefore, 'a sloppy label ("memory  fix #N") still withdraws the card');
 
@@ -2040,13 +2069,13 @@ ctx.ConnectionManagerRequestService = {
         return '<memedits>[{"find":"the cook burned the stew at noon.","replace":"the cook burned the stew at dusk.","reason":"third staging"}]</memedits>';
     },
 };
-document.getElementById('cc_input').value = 'stage it once more';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'stage it once more';
+clickFresh('chatassist_send');
 await sleep(900);
 withdrewBefore = (ccLogText().join('\n').match(/the assistant withdrew/gi) || []).length;
 ctx.ConnectionManagerRequestService = { sendRequest: async () => 'That one is dead.\n<supersede>Worldbook fix 77</supersede>' };
-document.getElementById('cc_input').value = 'withdraw the worldbook one';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'withdraw the worldbook one';
+clickFresh('chatassist_send');
 await sleep(900);
 const uLog = ccLogText().slice(-3).join('\n');
 ok(/no pending proposal carries that label/.test(uLog) && /Worldbook fix 77/.test(uLog), 'an unmatched supersede label is reported by name instead of silently doing nothing');
@@ -2086,8 +2115,8 @@ ctx.ConnectionManagerRequestService = {
         return 'Yes \u2014 she told him about her ex, in message #0.';
     },
 };
-document.getElementById('cc_input').value = 'did his sister ever tell him about an ex?';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'did his sister ever tell him about an ex?';
+clickFresh('chatassist_send');
 await sleep(1200);
 const fLog = ccLogText().slice(fStart).join('\n');
 ok(fTurn === 3, 'the malformed fetch costs one coaching round, then the resent valid request is served (got ' + fTurn + ' calls)');
@@ -2104,8 +2133,8 @@ const gStart = ccLogText().length;
 ctx.ConnectionManagerRequestService = {
     sendRequest: async () => { fTurn++; return 'Fetching now.\n<fetch>chat about the sister</fetch>'; },
 };
-document.getElementById('cc_input').value = 'what did the sister say?';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'what did the sister say?';
+clickFresh('chatassist_send');
 await sleep(1000);
 const gLog = ccLogText().slice(gStart).join('\n');
 ok(fTurn === 2, 'a repeat-malformed fetch gets exactly ONE coaching round, then stops (got ' + fTurn + ' calls)');
@@ -2132,8 +2161,8 @@ ctx.chatMetadata.summary_ledger = 'nothing here';
 
 let vSeen = '';
 ctx.ConnectionManagerRequestService = { sendRequest: async (pid, messages) => { vSeen = messages.map(m => String(m.content || '')).join('\n'); return 'Nothing to fix.'; } };
-document.getElementById('cc_input').value = 'anything wrong?';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'anything wrong?';
+clickFresh('chatassist_send');
 await sleep(700);
 ok(/FULL MESSAGES\] \(last 3\)/.test(vSeen), 'the window header counts visible messages, not raw rows (3 visible of 4 rows, setting 100)');
 ok(vSeen.includes('VISIBLE-ONE') && vSeen.includes('VISIBLE-TWO') && vSeen.includes('VISIBLE-THREE'), 'every visible message is served whole');
@@ -2153,8 +2182,8 @@ ctx.chatMetadata.summaryception = { ghostedIndices: [4] };
 
 let bTurn = 0;
 ctx.ConnectionManagerRequestService = { sendRequest: async () => { bTurn++; return '<edits>[{"id":1,"find":"QQXARO was lit","replace":"ZZTARO was lit","reason":"test"}]</edits>'; } };
-document.getElementById('cc_input').value = 'fix row 1';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix row 1';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(bTurn === 1, 'an edit to a VISIBLE in-window message costs no blind-fetch round, even though raw arithmetic put it outside (got ' + bTurn + ')');
 
@@ -2162,8 +2191,8 @@ dismissPending();
 bTurn = 0;
 const bStart = ccLogText().length;
 ctx.ConnectionManagerRequestService = { sendRequest: async () => { bTurn++; return '<edits>[{"id":4,"find":"millwheel creaked","replace":"millwheel sang","reason":"test"}]</edits>'; } };
-document.getElementById('cc_input').value = 'fix row 4';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix row 4';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(bTurn === 2, 'an edit to a GHOSTED row inside the raw tail is auto-fetched first — it was never read (got ' + bTurn + ' calls)');
 ok(/Auto-fetched #4/.test(ccLogText().slice(bStart).join('\n')), 'and the auto-fetch says why');
@@ -2194,8 +2223,8 @@ ctx.ConnectionManagerRequestService = {
         return 'The original wording is now in hand.';
     },
 };
-document.getElementById('cc_input').value = 'what exactly happened back then?';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'what exactly happened back then?';
+clickFresh('chatassist_send');
 await sleep(900);
 ok(gTurn === 2 && /GHOSTORIGINAL/.test(gSeen[1] || ''), 'a ghosted id fetches like any other — the original is served whole');
 ok(/READABLE on demand/.test(gSeen[0] || '') && /forbidden is UNHIDING it, not reading it/.test(gSeen[0] || ''), 'the edit rules separate reading a ghost (lawful) from unhiding it (forbidden)');
@@ -2217,8 +2246,8 @@ ctx.chatMetadata.summary_ledger = 'nothing here';
 CA.recentFull = 8;
 
 ctx.ConnectionManagerRequestService = { sendRequest: async () => '<edits>[{"id":0,"find":"QQXARO bell","replace":"ZZTARO bell","reason":"wrong bell"}]</edits>' };
-document.getElementById('cc_input').value = 'fix the bell name';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'fix the bell name';
+clickFresh('chatassist_send');
 await sleep(900);
 
 // The text moves under the staged card (fixed by another route): the anchor is
@@ -2236,8 +2265,8 @@ ctx.ConnectionManagerRequestService = {
     },
 };
 const sStart = ccLogText().length;
-document.getElementById('cc_input').value = 'is that fix still needed?';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = 'is that fix still needed?';
+clickFresh('chatassist_send');
 await sleep(900);
 const sBlock = sSeen[0] || '';
 const staleLine = (sBlock.match(/Chat fix \d+ \[message #0\][^\n]*/) || [''])[0];
@@ -2287,8 +2316,8 @@ ctx.ConnectionManagerRequestService = {
     },
 };
 const aStart = ccLogText().length;
-document.getElementById('cc_input').value = '#m';
-clickFresh('cc_send');
+document.getElementById('chatassist_input').value = '#m';
+clickFresh('chatassist_send');
 await sleep(2000);
 ok(/UNREACHABLE from memory alone/.test(aSeen['3'] || ''), 'the memory pass carries the absence law — conviction requires the originals in hand');
 ok(/PENDING PROPOSALS/.test(aSeen['4'] || '') && /clean up after the earlier passes/.test(aSeen['4'] || ''), 'the verify pass receives the staged list AND the re-review mandate');
