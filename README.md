@@ -4,6 +4,22 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.1 — Campaign Ledger row stays visible
+
+The Campaign Ledger DOM existed in v2.85.0, but long assistant session history
+could flex-shrink its container until the summary was clipped and untappable.
+The section now retains its size while its expanded content remains capped and
+scrollable. Existing mobile panel positioning and lore behavior are unchanged.
+
+`panel_dom_test.mjs` loads the actual extension into a browser, fires APP_READY,
+opens the actual panel, and checks that the Campaign Ledger summary is inside
+its container, visible, hittable and expandable. It covers empty and populated
+sessions at 360, 412 and 1280 pixels. Install Playwright locally, then run
+`CHROME_PATH=/usr/bin/google-chrome node panel_dom_test.mjs` (omit CHROME_PATH
+when using Playwright's installed browser). Restoring the previous flex-shrink
+rule makes the populated-session case fail. The required load gate also guards
+the non-shrinking section rule.
+
 ## v2.85.0 — provenance-aware Campaign Ledger
 
 Open **Campaign Ledger** inside Chat Assistant. **Audit new RP** initially scans
