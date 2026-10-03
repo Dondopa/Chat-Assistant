@@ -189,7 +189,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignBatch, campaignReview, campaignValid, campaignFingerprint, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -2615,6 +2615,77 @@ campaign.campaignStore().next=0;
 let hiddenCalls=0; ctx.ConnectionManagerRequestService.sendRequest=async()=>{hiddenCalls++; return JSON.stringify({records:[]});};
 await campaign.campaignAudit();
 ok(campaign.campaignStore().next===50 && hiddenCalls===0, 'hidden-only batch advances without a model call so later RP remains reachable');
+ctx.chatMetadata={}; ctx.chat=[];
+
+console.log('== Campaign extraction contract: mixed Terranovia RP and precise diagnostics ==');
+ok(['[WORLD CANON]', '**[WORLD CANON]**', '### **[PROPOSAL]**', '> [INFERENCE]', '__[OOC]__'].every(label=>campaign.campaignNonRP(label+'\nNon-RP analysis.')), 'plain, bold, heading and quoted analysis labels are excluded');
+ctx.chatMetadata={}; ctx.chatId='contract';
+ctx.chat=[
+ {name:'Narrator',mes:'*Garrick leans against the wharf rail.*\nGarrick: “Ask for Jericho at the Black Anchor tavern down by the wharf after sundown.”\n`I won’t tell Bunyon everything.`'},
+ {name:'Narrator',mes:'*Vael accepts Bunyon’s coin.*\nVael: "Jericho runs security for the Red Arcade’s private buyers."\n`The Duchess is secretly a dragon.`'},
+ {name:'Narrator',mes:'[WORLD CANON]\nANALYSIS_SECRET: Jericho is a possible contact.\n[PROPOSAL]\nHave him arrive tonight.'},
+];
+const batch07=campaign.campaignBatch(0);
+ok(batch07.sources.size===2 && !batch07.text.includes('ANALYSIS_SECRET'), 'explicit analyst content in the RP range is excluded from extraction');
+const mixed07=[
+ {type:' new-entity ',subject:'Jericho',fact:'Garrick refers to Jericho at the Black Anchor.',sourceIndex:'0',speaker:'garrick',evidence:' Dialogue ',quote:'Ask for Jericho at the Black Anchor tavern down by the wharf after sundown.',related:null},
+ {type:'NEW_ENTITY',subject:'Black Anchor',fact:'Garrick refers to Black Anchor tavern.',sourceIndex:0,speaker:'Garrick',evidence:'dialogue',quote:'Ask for Jericho at the Black Anchor tavern down by the wharf after sundown.',related:'Jericho'},
+ {type:'RELATIONSHIP',subject:'Jericho',fact:'Vael claims Jericho runs security for Red Arcade buyers.',sourceIndex:1,speaker:'Vael',evidence:'narration',quote:"Jericho runs security for the Red Arcade's private buyers.",related:['Red Arcade']},
+ {type:'STATE_CHANGE',subject:'Vael',fact:'Vael accepts Bunyon’s coin.',sourceIndex:1,speaker:null,evidence:'narration',quote:'*Vael accepts Bunyon’s coin.*',related:[]},
+ {type:'OBSERVED_FACT',subject:'Duchess',fact:'A character thinks the Duchess is a dragon.',sourceIndex:1,evidence:'narration',quote:'The Duchess is secretly a dragon.',related:[]},
+];
+const parsed07=campaign.campaignParse(JSON.stringify({records:mixed07}),batch07.sources);
+ok(parsed07.length===5 && parsed07[0].type==='NEW_ENTITY' && parsed07[0].source.index===0 && parsed07[0].related.length===0, 'normalizes enum spelling, decimal index and null optional related field');
+ok(parsed07[1].related[0]==='Jericho' && parsed07[0].source.character==='Garrick', 'normalizes singleton related name and case-only speaker spelling');
+ok(parsed07[2].provenance==='NPC CLAIM' && parsed07[2].source.quote.includes('Arcade’s'), 'smart apostrophe equivalence resolves to exact original evidence without promoting dialogue');
+ok(parsed07[3].provenance==='CAMPAIGN CANON' && parsed07[3].source.character===null, 'narration excerpt within mixed dialogue/thought message stays narration; null speaker is allowed');
+const roleSpeaker07=campaign.campaignParse(JSON.stringify({records:[{...mixed07[3],speaker:'Narrator'}]}),batch07.sources);
+ok(roleSpeaker07[0].source.character===null && roleSpeaker07[0].source.speaker==='Narrator', 'narrator role label is not mistaken for an invented NPC speaker');
+ok(parsed07[4].type==='UNRESOLVED_CLAIM', 'backtick thoughts cannot become objective campaign canon');
+ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({records:mixed07});
+await campaign.campaignAudit(0);
+ok(campaign.campaignStore().records.length===5 && campaign.campaignStore().next===3, 'mixed-format Terranovia extraction validates and commits a complete batch');
+const safeLogs07=[], savedWarn07=console.warn; console.warn=(...args)=>safeLogs07.push(args);
+const rejected07=(row, field, sources=batch07.sources)=>{
+ let result=null;try{campaign.campaignParse(JSON.stringify({records:[mixed07[0],row]}),sources);}catch(e){result=e.campaignDiagnostic;}
+ ok(result?.candidate===2 && result?.field===field && !!result.reason, 'invalid candidate 2 reports exact field: '+field);
+};
+try {
+ rejected07({...mixed07[0],quote:'UNSUPPORTED_PRIVATE_SENTINEL invented evidence'},'quote');
+ rejected07({...mixed07[0],quote:'Garrick leans against the WHARF rail.'},'quote');
+ rejected07({...mixed07[0],quote:'Ask for Jericho ... after sundown.'},'quote');
+ rejected07({...mixed07[0],sourceIndex:'message #0'},'sourceIndex');
+ rejected07({...mixed07[0],sourceIndex:90},'sourceIndex');
+ rejected07({...mixed07[0],type:'PROPOSAL'},'type');
+ rejected07({...mixed07[0],type:'NEW_ENTITY|OBSERVED_FACT'},'type');
+ rejected07({...mixed07[0],subject:null},'subject');
+ rejected07({...mixed07[0],subject:'x'.repeat(121)},'subject');
+ rejected07({...mixed07[0],fact:{}},'fact');
+ rejected07({...mixed07[0],sourceIndex:true},'sourceIndex');
+ rejected07({...mixed07[0],speaker:{}},'speaker');
+ rejected07({...mixed07[0],related:['x'.repeat(121)]},'related[0]');
+ rejected07({...mixed07[0],quote:'Garrick leans beside the Black Anchor.'},'quote',new Map([[0,{...batch07.sources.get(0),text:batch07.sources.get(0).text+'\nGarrick *leans* beside the Black Anchor.'}]]));
+ rejected07({...mixed07[0],quote:'Jericho was mentioned.'},'quote',new Map([[0,{...batch07.sources.get(0),text:batch07.sources.get(0).text+'\nJericho was mentioned. Jericho was mentioned.'}]]));
+ rejected07({...mixed07[0],fact:'x'.repeat(601)},'fact');
+ rejected07({...mixed07[0],related:[{}]},'related[0]');
+ rejected07({...mixed07[0],related:Array(9).fill('Vael')},'related');
+ rejected07({...mixed07[0],speaker:'UNSUPPORTED_PRIVATE_SPEAKER'},'speaker');
+ rejected07({...mixed07[0],evidence:'objective'},'evidence');
+ const analysisSources=new Map([[2,{...batch07.sources.get(0),index:2,text:ctx.chat[2].mes}]]);
+ rejected07({...mixed07[0],sourceIndex:2,quote:'ANALYSIS_SECRET: Jericho is a possible contact.'},'sourceIndex',new Map([...batch07.sources,...analysisSources]));
+ let jsonError;try{campaign.campaignParse('PRIVATE_BAD_JSON',batch07.sources);}catch(e){jsonError=e.campaignDiagnostic;}
+ ok(jsonError?.field==='response' && jsonError.candidate===null,'malformed JSON has response-level diagnostics without echoing output');
+ const store=campaign.campaignStore(), snapshot=JSON.stringify(store); store.next=0;
+ const snapshotZero=JSON.stringify(store);
+ ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({records:[{...mixed07[0],fact:'Valid new candidate before invalid one.'},{...mixed07[1],quote:'UNSUPPORTED_PRIVATE_SENTINEL evidence'}]});
+ await campaign.campaignAudit(0);
+ ok(JSON.stringify(store)===snapshotZero, 'valid first candidate plus invalid second candidate saves nothing and never advances cursor');
+ ok(safeLogs07.some(args=>args.some(x=>x?.candidate===2 && x?.field==='quote' && x?.reason)), 'console emits candidate number, field and rejection reason');
+ ok(!JSON.stringify(safeLogs07).includes('PRIVATE_SENTINEL') && !JSON.stringify(safeLogs07).includes('PRIVATE_SPEAKER') && !JSON.stringify(safeLogs07).includes('PRIVATE_BAD_JSON') && !JSON.stringify(safeLogs07).includes('ANALYSIS_SECRET'), 'diagnostics do not log RP text, model output or speaker content');
+} finally { console.warn=savedWarn07; }
+const singleSpeech={index:0,text:"Vael: 'I don't trust Jericho at the Black Anchor.'",speaker:'Narrator',fingerprint:'test'};
+const singleRecord={...mixed07[0],type:'OBSERVED_FACT',sourceIndex:0,speaker:'Vael',evidence:'narration',quote:"I don't trust Jericho at the Black Anchor."};
+ok(campaign.campaignParse(JSON.stringify({records:[singleRecord]}),new Map([[0,singleSpeech]]))[0].provenance==='NPC CLAIM', 'single-quoted speech with an apostrophe remains a claim');
 ctx.chatMetadata={}; ctx.chat=[];
 
 console.log('');
