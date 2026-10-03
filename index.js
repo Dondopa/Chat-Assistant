@@ -1219,12 +1219,19 @@
         while (next < chat.length && next < start + 50) {
             const m = chat[next];
             if (!m || m.is_system || campaignNonRP(m.mes) || !String(m.mes || '').trim()) { next++; continue; }
-            const text = fullTextOf([next], 0); // whole text, labelled COMPLETE by the shared reader
+            const whole = fullTextOf([next], 0); // whole text, labelled COMPLETE by the shared reader
+            const original = String(m.mes), spans = campaignSpans(original, next);
+            // Annotate the shared reader's complete body; no source characters
+            // are removed, normalized or duplicated. Labels are not evidence.
+            const bodyStart = whole.length - original.length;
+            if (whole.slice(bodyStart) !== original) throw new Error('Campaign source reader mismatch; nothing saved.');
+            const body = whole.slice(bodyStart);
+            const text = whole.slice(0, bodyStart) + spans.map(span => '\n[SOURCE SPAN ' + span.id + ']\n' + body.slice(span.start, span.end)).join('');
             if (chars + text.length + (blocks.length ? 2 : 0) > 24000) {
                 if (!blocks.length) throw new Error('RP message #' + next + ' exceeds the 24,000-character audit budget. It was not skipped; choose a later start or shorten that message before auditing it.');
                 break;
             }
-            sources.set(next, { index: next, fingerprint: campaignFingerprint(m), text: String(m.mes), speaker: String(m.name || (m.is_user ? 'Player' : 'Narrator')), timestamp: m.send_date ?? null });
+            sources.set(next, { index: next, fingerprint: campaignFingerprint(m), text: original, spans, speaker: String(m.name || (m.is_user ? 'Player' : 'Narrator')), timestamp: m.send_date ?? null });
             chars += text.length + (blocks.length ? 2 : 0); blocks.push(text); next++;
         }
         return { sources, next, text: blocks.join('\n\n') };
@@ -1241,20 +1248,31 @@
         error.campaignDiagnostic = diagnostic;
         throw error;
     }
-    function campaignQuote(source, quote, candidate, sourceIndex) {
-        const typography = text => text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
-        let start = source.indexOf(quote);
-        if (start < 0) {
-            // One-to-one punctuation mapping only: no case, word, whitespace,
-            // Markdown, ellipsis or fuzzy matching. Save the original source slice.
-            const normalized = typography(quote), haystack = typography(source);
-            start = haystack.indexOf(normalized);
-            if (start < 0) campaignInvalid(candidate, 'quote', 'no verbatim source match (only smart/straight quote equivalence is allowed)', { sourceIndex, quoteChars: quote.length });
-            if (haystack.indexOf(normalized, start + 1) >= 0) campaignInvalid(candidate, 'quote', 'ambiguous source match; use a unique excerpt', { sourceIndex });
-        } else if (source.indexOf(quote, start + 1) >= 0) {
-            campaignInvalid(candidate, 'quote', 'ambiguous source match; use a unique excerpt', { sourceIndex });
+    function campaignSpans(text, messageIndex) {
+        // Exact UTF-16 offsets in the original message. Newlines remain in the
+        // preceding span; bounded chunks never cut a surrogate pair in half.
+        const spans = [];
+        for (let start = 0; start < text.length;) {
+            const newline = text.indexOf('\n', start);
+            let end = Math.min(text.length, start + 600, newline < 0 ? text.length : newline + 1);
+            if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+            spans.push({ id: 'M' + messageIndex + ':S' + (spans.length + 1), start, end });
+            start = end;
         }
-        return { start, end: start + quote.length, text: source.slice(start, start + quote.length) };
+        return spans;
+    }
+    function campaignAnchor(source, ids, candidate) {
+        if (!Array.isArray(ids) || !ids.length || ids.length > 4 || ids.some(id => typeof id !== 'string')) {
+            campaignInvalid(candidate, 'sourceSpanIds', 'expected 1–4 source span IDs; recreated quotes are not evidence');
+        }
+        const spans = source.spans || [];
+        const selected = ids.map(id => spans.findIndex(span => span.id === id));
+        if (selected.some(n => n < 0)) campaignInvalid(candidate, 'sourceSpanIds', 'span was not supplied for this message in this audit batch', { sourceIndex: source.index });
+        if (selected.some((n, i) => i && n !== selected[i - 1] + 1)) campaignInvalid(candidate, 'sourceSpanIds', 'spans must be consecutive, unique and in source order', { sourceIndex: source.index });
+        const start = spans[selected[0]].start, end = spans[selected[selected.length - 1]].end;
+        const text = source.text.slice(start, end);
+        if (text.trim().length < 8 || text.length > 1200) campaignInvalid(candidate, 'sourceSpanIds', 'selected evidence must contain 8–1200 source characters', { sourceIndex: source.index, actualChars: text.length });
+        return { start, end, text, spanIds: ids.slice() };
     }
     function campaignEvidence(text, match, declared) {
         let quote = null, start = 0, thought = declared === 'thought', dialogue = declared === 'dialogue';
@@ -1303,8 +1321,7 @@
                 row[field] = row[field].trim();
                 if (row[field].length > limit) campaignInvalid(candidate, field, 'field exceeds character limit', { actualChars: row[field].length, maxChars: limit });
             }
-            if (typeof row.quote !== 'string' || row.quote.trim().length < 8 || row.quote.length > 1200) campaignInvalid(candidate, 'quote', 'expected an 8–1200 character source excerpt');
-            const match = campaignQuote(source.text, row.quote, candidate, row.sourceIndex);
+            const match = campaignAnchor(source, row.sourceSpanIds, candidate);
             row.related = row.related == null ? [] : typeof row.related === 'string' ? [row.related] : row.related;
             if (!Array.isArray(row.related) || row.related.length > 8) campaignInvalid(candidate, 'related', 'expected at most 8 related entity names');
             row.related = row.related.map((name, n) => {
@@ -1328,7 +1345,7 @@
             const provenance = type === 'UNRESOLVED_CLAIM' ? 'UNRESOLVED CLAIM' : type === 'NPC_CLAIM' ? 'NPC CLAIM' : evidence === 'dialogue' ? 'DIALOGUE REFERENCE' : 'CAMPAIGN CANON';
             return { type, subject: row.subject, fact: row.fact, evidence, provenance,
                 confidence: 'model-extracted; requires human review', status: 'pending', related: [...new Set(row.related)],
-                source: { index: source.index, fingerprint: source.fingerprint, quote: match.text, speaker: source.speaker, character: row.speaker, timestamp: source.timestamp },
+                source: { index: source.index, fingerprint: source.fingerprint, quote: match.text, spanIds: match.spanIds, start: match.start, end: match.end, speaker: source.speaker, character: row.speaker, timestamp: source.timestamp },
                 lore: { status: 'not checked', candidates: [] } };
         });
     }
@@ -1369,7 +1386,7 @@
                 store.next = batch.next; saveMeta(); campaignRender();
                 toast('No visible RP messages in this batch. Next message: #' + batch.next + '.', 'info'); return;
             }
-            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","quote":"exact supporting RP excerpt","related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Each quote must come from the cited message, be 8–1200 characters, be a unique literal excerpt including any Markdown inside it (not rendered or paraphrased), and support the whole fact. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
+            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","sourceSpanIds":["M0:S1"],"related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Use sourceSpanIds, an array of 1–4 consecutive SOURCE SPAN IDs from the cited message, in source order. Select the smallest supplied span range supporting the whole fact (8–1200 original characters). These labels are extension annotations, not RP. Never invent IDs or reproduce a quote: the extension copies the original source text. A span containing speech or thoughts is conservatively classified as a claim even if it also contains narration. Do not use a narration-only span to support a claim found only in neighboring dialogue. If no supplied span range supports the whole fact, omit the record. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
             const raw = await callLLM([{ role: 'system', content: prompt }, { role: 'user', content: batch.text }], null, 8192);
             if (!sameChat(chatAt) || stopRequested) return;
             const records = campaignParse(raw, batch.sources);
