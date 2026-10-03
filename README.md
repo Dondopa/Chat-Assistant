@@ -4,6 +4,47 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.2 — Campaign Audit contract and safe diagnostics
+
+Rejected audits now identify the **1-based candidate number, field and reason**.
+The console warning `Campaign audit rejected` adds safe numeric details when
+useful (message index, lengths/limits). It never prints RP excerpts, facts,
+speaker names, full model responses or provider data. Malformed JSON has a
+response-level diagnostic without echoing the JSON parser's input. A valid
+candidate followed by an invalid candidate still saves **nothing** and does
+not advance the cursor. No partial acceptance or automatic model repair.
+
+The extraction prompt now spells out all field limits and uses a concrete JSON
+example rather than pipe-separated enum placeholders. The parser normalizes
+case/space/hyphen variants of supported type names, decimal-string message
+indices, null optional fields and singleton related names. Unsupported types,
+booleans as indices, out-of-batch indices, oversized/invalid fields and unbacked
+speaker names are rejected. A narration speaker of “Narrator” is a role label,
+not an invented NPC; the actual message speaker remains stored.
+
+Evidence must be a unique literal source excerpt. The only punctuation tolerance
+is straight/curly quotation-mark and apostrophe equivalence; matching stores the
+**original exact source slice**, so later source-validity checks remain literal.
+No case folding, paraphrase, whitespace collapsing, ellipsis expansion or
+Markdown stripping is used for quotes. Repeated excerpts require a unique quote.
+
+Provenance is checked against the excerpt's location within the original message.
+Straight/curly/single-quoted dialogue remains a claim, including excerpts that
+omit enclosing quotes. Apostrophes inside words do not close speech. Backtick
+thoughts are unresolved claims, never objective campaign canon. Narration beside
+dialogue remains narration when its excerpt lies outside dialogue/thought spans.
+Explicitly labelled analyst/OOC blocks, including [WORLD CANON], [INFERENCE] and
+[PROPOSAL], are excluded from audit evidence and retrieval eligibility. These
+conservative checks are not a universal RP parser; unlabelled analysis, ambiguous
+attribution and narrative meaning still require review. Existing data is not deleted.
+
+Regression fixtures use Garrick/Jericho/Black Anchor referrals, Vael/Red Arcade
+claims, italic narration, curly apostrophes and backtick thoughts. They reproduce
+v2.85.1's rejection of benign contract variations and verify unsupported evidence
+still fails closed. The exact original failed model response was unavailable;
+diagnostics now make remaining real-world failures specific. Campaign visibility,
+mobile positioning and lore-discovery behavior are unchanged.
+
 ## v2.85.1 — Campaign Ledger row stays visible
 
 The Campaign Ledger DOM existed in v2.85.0, but long assistant session history
