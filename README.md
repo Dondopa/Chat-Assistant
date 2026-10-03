@@ -4,6 +4,41 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.5 — Measured Campaign Audit evidence choices
+
+Span labels now include their exact character length and `validEnds`: permitted
+end IDs with the total inclusive range length for each choice. The extractor
+chooses its start and an end from that start’s list; it no longer has to estimate
+lengths. `validEnds=none` means that start has no permitted range. The existing
+limits remain **at most four spans, at least eight characters after trimming
+outer whitespace, and at most 1,200 original characters**. Counting uses UTF-16
+code units, including Markdown, punctuation, spaces and newlines. A shared size
+policy produces the choices and validates returned ranges. Labels count toward
+the existing whole-message audit budget; source text is not clipped or omitted.
+
+The prompt puts the hard limits first, explains why three 600-character spans
+are invalid despite meeting the span-count limit, and requires checking every
+record against the printed choices. These choices certify size, not that a
+range supports the model’s interpretation; pending records still require review.
+
+Diagnostics distinguish invalid structure from valid endpoints whose evidence
+is too short or too long. The toast reports the measured size; safe console
+metadata includes the category, size issue, source length, trimmed length and
+limits. Invalid evidence still rejects the entire batch without cursor movement.
+
+No automatic narrowing is performed. Finding a smaller permitted boundary is
+deterministic, but deciding whether it preserves support for a natural-language
+claim is not. Removing a tail could discard a qualification, dialogue or thought,
+or leave a narration-only range that changes provenance. Neither the 1,200 cap
+nor the evidence rules were relaxed. Range references, source fingerprints,
+mobile behavior, ledger visibility and lore discovery are unchanged.
+
+Regression fixtures reproduce valid same-message endpoints resolving below
+eight or above 1,200 characters, including atomic candidate-2 failures. They
+check exact boundary acceptance, metadata/validator agreement, whitespace and
+Unicode counting, four-span limits, and refusal to narrow away claim/thought
+tails. The unseen live model response is not claimed as an exact replay.
+
 ## v2.85.4 — Inclusive Campaign Audit evidence ranges
 
 The model now supplies `sourceSpanRange: {"start":"M23:S2","end":"M23:S4"}`.
