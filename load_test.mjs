@@ -189,7 +189,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSpans, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSpans, campaignRangeChoices, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -2710,9 +2710,9 @@ ok(combined08.source.quote===batch07.sources.get(0).text.slice(combined08.source
 for(const source of batch07.sources.values()) {
  ok(JSON.stringify(source.spans)===JSON.stringify(campaign.campaignSpans(source.text,source.index)) && source.spans.map(x=>source.text.slice(x.start,x.end)).join('')===source.text, 'source span IDs are deterministic and partition every original character');
  const body=batch07.text.split('COMPLETE (entire message, first character to last; nothing omitted) ---\n')[source.index+1]?.split('\n\n--- #')[0];
- ok(body?.replace(/\n\[SOURCE SPAN M\d+:S\d+\]\n/g,'')===source.text, 'annotated complete reader preserves original message after removing structural labels');
+ ok(body?.replace(/\n\[SOURCE SPAN M\d+:S\d+; chars=\d+; validEnds=[^\]\n]+\]\n/g,'')===source.text, 'annotated complete reader preserves original message after removing structural labels');
 }
-ok(campaignRequests[0][0].content.includes('sourceSpanRange') && !campaignRequests[0][0].content.includes('"quote":') && campaignRequests[0][1].content.includes('[SOURCE SPAN M0:S1]'), 'real audit request advertises range endpoints instead of recreated quote contract');
+ok(campaignRequests[0][0].content.includes('sourceSpanRange') && !campaignRequests[0][0].content.includes('"quote":') && campaignRequests[0][1].content.includes('[SOURCE SPAN M0:S1; chars='), 'real audit request advertises range endpoints instead of recreated quote contract');
 const repeated08={index:23,text:'Vael waits.\nVael waits.\n',speaker:'Narrator',fingerprint:'test'};
 repeated08.spans=campaign.campaignSpans(repeated08.text,23);
 const repeatedRecord08=campaign.campaignParse(JSON.stringify({records:[{...mixed07[3],sourceIndex:23,sourceSpanRange:{start:'M23:S2',end:'M23:S2'}}]}),new Map([[23,repeated08]]))[0];
@@ -2769,6 +2769,78 @@ for(const invalid of rejectedRanges09) {
  ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({records:[{...mixed07[3],fact:'New valid candidate must not be partially saved.'},{...endpointRecord09,...invalid}]});
  await campaign.campaignAudit(0);
  ok(JSON.stringify(rangeStore09)===before, 'invalid range in candidate 2 rejects the whole batch and leaves the cursor untouched: '+JSON.stringify(invalid));
+}
+console.log('== v2.85.5 range-size metadata and fail-closed diagnostics ==');
+ctx.chatMetadata={}; ctx.chatId='range-size';
+ctx.chat=[
+ {name:'Narrator',mes:'Vael: ?'},
+ {name:'Narrator',mes:'Vael waits. '+ 'x'.repeat(1788)},
+ {name:'Narrator',mes:'Vael sat'},
+ {name:'Narrator',mes:'V'.repeat(1200)},
+ {name:'Narrator',mes:' '.repeat(1193)+'1234567'},
+];
+const sizeBatch10=campaign.campaignBatch(0);
+const sizeRow10=(sourceIndex,start,end)=>({type:'OBSERVED_FACT',subject:'Vael',fact:'Vael is present.',sourceIndex,evidence:'narration',speaker:null,related:[],sourceSpanRange:{start,end}});
+const validSizeRow10=sizeRow10(2,'M2:S1','M2:S1');
+const diagnostics10=[], oldWarn10=console.warn;
+console.warn=(...args)=>diagnostics10.push(args.find(x=>x?.field));
+try {
+ const cases10=[
+  {row:sizeRow10(0,'M0:S1','M0:S1'),issue:'too_short',chars:ctx.chat[0].mes.length,evidenceChars:ctx.chat[0].mes.trim().length},
+  {row:sizeRow10(1,'M1:S1','M1:S3'),issue:'too_long',chars:ctx.chat[1].mes.length,evidenceChars:ctx.chat[1].mes.trim().length},
+  {row:sizeRow10(4,'M4:S1','M4:S2'),issue:'too_short',chars:ctx.chat[4].mes.length,evidenceChars:ctx.chat[4].mes.trim().length},
+ ];
+ for(const {row,issue,chars,evidenceChars} of cases10) {
+  let diagnostic;
+  try{campaign.campaignParse(JSON.stringify({records:[validSizeRow10,row]}),sizeBatch10.sources);}catch(e){diagnostic=e.campaignDiagnostic;}
+  ok(diagnostic?.candidate===2 && diagnostic?.category==='range_size' && diagnostic.issue===issue && diagnostic.actualChars===chars && diagnostic.evidenceChars===evidenceChars && diagnostic.minChars===8 && diagnostic.maxChars===1200, 'valid endpoints outside character limits identify candidate 2 size failure with exact measurements: '+issue);
+  const store=campaign.campaignStore();store.next=0;const snapshot=JSON.stringify(store);
+  ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({records:[validSizeRow10,row]});
+  await campaign.campaignAudit(0);
+  ok(JSON.stringify(store)===snapshot, 'v2.85.4 failure class remains atomic with immobile cursor: '+issue);
+ }
+ let structural10;
+ try{campaign.campaignParse(JSON.stringify({records:[sizeRow10(0,'M1:S1','M0:S1')]}),sizeBatch10.sources);}catch(e){structural10=e.campaignDiagnostic;}
+ ok(structural10?.category==='range_structure' && !structural10.issue, 'foreign endpoint is distinguished from valid-but-wrong-size evidence');
+} finally {console.warn=oldWarn10;}
+const boundaries10=campaign.campaignParse(JSON.stringify({records:[validSizeRow10,sizeRow10(3,'M3:S1','M3:S2')]}),sizeBatch10.sources);
+ok(boundaries10[0].source.quote.length===8 && boundaries10[1].source.quote.length===1200, 'exact 8 and 1200 character boundaries remain accepted without raising limits');
+let checkedChoices10=0, metadataConsistent10=true;
+for(const source of sizeBatch10.sources.values()) for(let first=0; first<source.spans.length; first++) {
+ const choices=campaign.campaignRangeChoices(source.text,source.spans,first);
+ const independentlyExpected=[];
+ for(let last=first;last<Math.min(source.spans.length,first+4);last++) {
+  const exact=source.text.slice(source.spans[first].start,source.spans[last].end);
+  if(exact.trim().length>=8 && exact.length<=1200) independentlyExpected.push({end:source.spans[last].id,chars:exact.length});
+ }
+ metadataConsistent10 &&= JSON.stringify(choices)===JSON.stringify(independentlyExpected);
+ const label='[SOURCE SPAN '+source.spans[first].id+'; chars='+(source.spans[first].end-source.spans[first].start)+'; validEnds='+(choices.map(x=>x.end+'='+x.chars).join(',')||'none')+']';
+ metadataConsistent10 &&= sizeBatch10.text.includes(label);
+ for(const choice of choices) {
+  const record=campaign.campaignParse(JSON.stringify({records:[sizeRow10(source.index,source.spans[first].id,choice.end)]}),sizeBatch10.sources)[0];
+  metadataConsistent10 &&= record.source.quote.length===choice.chars && record.source.quote===source.text.slice(record.source.start,record.source.end);
+  checkedChoices10++;
+ }
+}
+ok(metadataConsistent10 && checkedChoices10>0, 'printed span lengths and all offered endpoints exactly match independent source measurements and real validator');
+ok(sizeBatch10.text.includes('[SOURCE SPAN M0:S1; chars=7; validEnds=none]') && sizeBatch10.text.includes('[SOURCE SPAN M1:S1; chars=600; validEnds=M1:S1=600,M1:S2=1200]'), 'short and oversized range traps are explicit in model input, with only permitted ends offered');
+const fiveChoices10=campaign.campaignRangeChoices(fiveSpans09.text,fiveSpans09.spans,0);
+ok(fiveChoices10.length===4 && !fiveChoices10.some(x=>x.end==='M23:S5'), 'endpoint choices retain the four-span limit even when five spans fit the character limit');
+let sizeRequest10;
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,messages)=>{sizeRequest10=messages;return JSON.stringify({records:[validSizeRow10]});};
+await campaign.campaignAudit(0);
+ok(sizeRequest10[0].content.includes('HARD EVIDENCE LIMIT') && sizeRequest10[0].content.includes('Choose the end ONLY from validEnds') && sizeRequest10[0].content.includes('3 spans of 600 chars total 1800') && sizeRequest10[1].content===sizeBatch10.text, 'actual extraction request makes both limits explicit and supplies exact endpoint-size choices');
+ok(campaign.campaignStore().records.length===1 && campaign.campaignStore().next===ctx.chat.length, 'valid size-selected audit still commits normally');
+// A narrower permitted narration range exists, but dropping the original
+// range tail would remove qualifying speech/thoughts. Never do that silently.
+for(const tail of ['Vael: "That is only a rumor."','`I may be wrong about Jericho.`']) {
+ const text='*Vael waits.*\n'+ 'x'.repeat(1180)+'\n'+tail;
+ const source={index:23,text,speaker:'Narrator',fingerprint:'test',spans:campaign.campaignSpans(text,23)};
+ const whole=sizeRow10(23,'M23:S1',source.spans.at(-1).id);
+ let rejection;
+ try{campaign.campaignParse(JSON.stringify({records:[whole]}),new Map([[23,source]]));}catch(e){rejection=e.campaignDiagnostic;}
+ const narrow=campaign.campaignParse(JSON.stringify({records:[sizeRow10(23,'M23:S1','M23:S1')]}),new Map([[23,source]]))[0];
+ ok(rejection?.category==='range_size' && rejection.issue==='too_long' && narrow.provenance==='CAMPAIGN CANON', 'oversized range is not silently narrowed to narration when the tail carries a claim or thought');
 }
 ctx.chatMetadata={}; ctx.chat=[];
 
