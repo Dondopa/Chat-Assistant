@@ -4,6 +4,63 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.86.0 — Message-anchored Campaign Ledger and human review
+
+Campaign Audit now extracts **pending candidates anchored to an actual RP
+message**. The model returns `sourceMessageIndex`, a supported `type`, `subject`
+and `fact`. Optional `speaker`, `related` and `evidence` (`narration`, `dialogue`,
+`thought`) classify the candidate; the prompt requests evidence classification
+for mixed messages and dialogue-only entity references. No model quotation,
+span ID, range, offset or evidence-character limit is required. Incidental old
+quote/range fields are ignored, not used as an alternate evidence path.
+
+Code validates the required fields and that the source index belongs to the
+eligible audited RP batch. System/hidden messages and explicitly labelled
+OOC/analysis are excluded; assistant session history, Director plans and
+lorebook entries are never audit inputs. The captured chat and all source
+fingerprints are rechecked before committing. Malformed responses or invalid
+source references still reject the entire batch with no cursor movement.
+Whole-message input continues through `fullTextOf()` with COMPLETE labels and
+the existing 50-message/24,000-character request budget. That request budget is
+not a substring evidence cap; an oversized single input fails explicitly rather
+than being silently clipped.
+
+All new records are **pending**, and pending/rejected/stale records cannot enter
+Campaign Ledger retrieval. Narrated-event candidates show **UNREVIEWED RP**,
+not Campaign Canon, until accepted. Review cards show type, subject, fact/claim,
+source index and speaker, status and optional lore candidates. **Show source RP
+message** opens the entire current, fingerprint-matching RP text as plain text.
+It is not a model-generated quote. If the source has changed or the chat has
+switched, the viewer reports that instead of presenting replacement text as the
+original evidence. Reject remains available; stale sources cannot be accepted.
+
+The extractor classifies mixed messages semantically and humans verify that
+classification. Declared dialogue becomes NPC_CLAIM (or a NEW_ENTITY dialogue
+reference); declared thoughts become UNRESOLVED_CLAIM. An entirely
+backtick-delimited source is also kept subjective even if the model mislabels
+it. Unrelated dialogue/thought in a mixed message no longer invalidates a
+narrated-event candidate. This is not deterministic proof of semantic truth:
+a wrongly classified mixed-message candidate can reach review and should be
+rejected. Accepting NPC claims or thoughts never upgrades their contents to
+objective truth. Acceptance approves playthrough memory, not Worldbook Canon.
+
+Accepted records use the same bounded selective retrieval (12 records/6,000
+characters). The whole source message is available for human inspection but
+is not automatically injected into future model context. Editing, replacing,
+hiding, deleting or reordering a source so its fingerprint no longer matches
+makes its records ineligible. Existing records need no migration: their legacy
+quote/offset fields are inert, and the same message fingerprint is the only
+source anchor. No second span validator remains active.
+
+Removed Campaign Audit's span segmentation, span/range resolver, length-choice
+metadata and offset-based provenance scanning. Tests now cover narrated events,
+NPC claims, thoughts, long mixed RP/status messages, atomic failures, source
+staleness, chat isolation, review filtering and bounded retrieval. Real-browser
+panel tests exercise source inspection, safe text rendering, Accept and stale
+sources at desktop and mobile sizes. Selective lore discovery, wisearch/wifetch,
+optional entity-name lore checks, mobile opening/layout, the ledger visibility
+fix, Director/session features and World Info write behavior are unchanged.
+
 ## v2.85.5 — Measured Campaign Audit evidence choices
 
 Span labels now include their exact character length and `validEnds`: permitted
