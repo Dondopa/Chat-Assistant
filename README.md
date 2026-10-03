@@ -4,6 +4,35 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.4 — Inclusive Campaign Audit evidence ranges
+
+The model now supplies `sourceSpanRange: {"start":"M23:S2","end":"M23:S4"}`.
+It identifies the two endpoints; extension code includes S2, S3 and S4 and
+copies the exact continuous original slice. A single span uses the same ID
+for both endpoints. This removes the v2.85.3 requirement that the model
+correctly enumerate a consecutive array.
+
+Both endpoints must exist in the candidate's cited, supplied RP message and
+start must not follow end. The inclusive range may contain at most four spans
+and must meet the unchanged 8–1,200 source-character limit. Missing, foreign,
+reversed, nonexistent, malformed and oversized ranges reject the entire batch,
+without saving records or moving its cursor. No sorting, deduplication,
+endpoint repair, disjoint arrays or legacy quote fallback is performed.
+Diagnostics identify the candidate, field and reason without printing RP text.
+
+Provenance is checked against the resulting offsets in the original message,
+including every intervening span: narration endpoints cannot hide dialogue or
+thoughts between them. Persisted records still store the expanded span IDs,
+exact quote and offsets; previous ledger records need no migration. Mobile
+positioning, Campaign Ledger visibility and lore discovery are unchanged.
+
+Regression tests cover the live failure class (endpoint selection that formerly
+omitted an interior span), complete two-candidate audit success, same-endpoint
+ranges, inclusive span/character limits and whole-batch rejection for invalid
+candidate 2 ranges. The screenshot did not include the actual rejected array,
+so the fixture reproduces that contract failure class rather than claiming to
+replay the unseen response.
+
 ## v2.85.3 — Deterministic Campaign Audit evidence
 
 Campaign audits now ask for `sourceSpanIds` such as `["M23:S2"]`, never a
