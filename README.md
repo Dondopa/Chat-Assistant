@@ -4,6 +4,42 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.85.3 — Deterministic Campaign Audit evidence
+
+Campaign audits now ask for `sourceSpanIds` such as `["M23:S2"]`, never a
+recreated quote. Before extraction, code partitions each eligible RP message
+into exact source spans at newlines, splitting long lines into at most 600
+UTF-16 characters without splitting emoji surrogate pairs. IDs are temporary
+addresses within that audited message snapshot. Complete messages still pass
+through `fullTextOf()`; structural labels are inserted without removing or
+normalizing any original characters. Labels count toward the existing 24,000
+character batch budget; they are not part of the source evidence.
+
+A candidate must reference 1–4 consecutive spans, in order, from its supplied
+message. Their continuous original slice must contain 8–1,200 characters.
+The extension copies that slice into the stored quote, with span IDs and exact
+offsets. It never resolves a paraphrase, repairs an invented ID, or falls back
+to a model-supplied quote. An incidental `quote` field is ignored. Missing,
+foreign, duplicate, reversed, disjoint or oversized references reject the
+**whole batch**, with record/field/reason diagnostics and no cursor advance.
+Existing stored records remain valid under their original fingerprint and
+literal-source checks; no migration or re-audit is required.
+
+Provenance is checked at those offsets in the original entire RP message.
+Dialogue and backtick thoughts cannot become objective canon by omitting their
+punctuation from the model output. A span mixing narration with dialogue/thought
+is conservatively treated as a claim. Source fingerprints still reject edits,
+swipes or reorders during extraction. Structural anchoring proves where evidence
+came from, not that the model interpreted it correctly: records remain pending
+human review. Analysis/OOC exclusion and all other field checks remain intact.
+
+Regression coverage reproduces the v2.85.2 failure class: a correct Vael candidate
+with a Markdown/typography-normalized quote succeeds only with a resolvable span
+ID and stores the untouched original RP. The original rejected model payload was
+not available. Tests also cover ambiguous repeated text, wrong-message IDs,
+range limits, complete source preservation and atomic failure. Campaign Ledger
+visibility, mobile positioning and lore discovery are unchanged.
+
 ## v2.85.2 — Campaign Audit contract and safe diagnostics
 
 Rejected audits now identify the **1-based candidate number, field and reason**.
