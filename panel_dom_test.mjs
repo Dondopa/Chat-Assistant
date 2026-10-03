@@ -18,7 +18,7 @@ try {
    window.SillyTavern={getContext:()=>testContext};
    window.$=window.jQuery=element=>({on:(type,handler)=>element.addEventListener(type,handler)});
   },populated);
-  await page.addScriptTag({content:readFileSync(new URL('index.js',import.meta.url),'utf8')});
+  await page.addScriptTag({content:readFileSync(new URL('index.js',import.meta.url),'utf8').replace('    // Fallback in case APP_READY', '    window.campaignTest = { campaignBatch, campaignParse, campaignStore, campaignRender, campaignSelect };\n    // Fallback in case APP_READY')});
   await page.evaluate(()=>ready.forEach(fn=>fn()));
   assert.equal(await page.locator('#chatassist_panel #chatassist_campaign > summary').count(),1,'APP_READY must build the row in the real panel');
   await page.locator('#chatassist_menu_item').click();
@@ -31,9 +31,39 @@ try {
    `Campaign row must be fully visible and hittable (${width}, populated=${populated}): ${JSON.stringify(geometry)}`);
   await page.locator('#chatassist_campaign > summary').click();
   assert.equal(await page.locator('#chatassist_campaign_audit').isVisible(),true,'Expanding row reveals Audit');
+  await page.evaluate(()=>{
+   window.originalSourceText='*Vael sits.*\nVael: "Jericho works for the Red Arcade."\n'+ 'An ordinary long RP paragraph. '.repeat(60)+'<img src=x onerror="window.sourceExecuted=true">';
+   testContext.chat=[{name:'Narrator',mes:originalSourceText}];
+   const source=campaignTest.campaignBatch(0);
+   const record=campaignTest.campaignParse(JSON.stringify({records:[{sourceMessageIndex:0,type:'NPC_CLAIM',subject:'Jericho',fact:'Vael claims Jericho works for Red Arcade.',speaker:'Vael'}]}),source.sources)[0];
+   campaignTest.campaignStore().records.push({...record,id:'CL-review'});
+   campaignTest.campaignRender();
+  });
+  const card=page.locator('.cc_campaign_record').first();
+  assert.ok((await card.innerText()).includes('pending'));
+  assert.ok(!(await card.innerText()).includes('CAMPAIGN CANON'));
+  await card.locator('.cc_campaign_source summary').click();
+  await page.waitForFunction(()=>document.querySelector('.cc_campaign_source pre')?.textContent===window.originalSourceText);
+  assert.equal(await card.locator('pre').textContent(),await page.evaluate(()=>originalSourceText),'review displays whole actual RP without HTML execution or clipping');
+  assert.equal(await card.locator('pre img').count(),0);
+  assert.equal(await page.evaluate(()=>!!window.sourceExecuted),false);
+  await card.getByRole('button',{name:'Accept',exact:true}).click();
+  assert.ok((await card.innerText()).includes('accepted') && (await card.innerText()).includes('NPC CLAIM'));
+  assert.ok((await page.evaluate(()=>campaignTest.campaignSelect('Jericho'))).includes('NPC CLAIM'));
+  await page.evaluate(()=>{testContext.chat[0].mes+=' source changed';campaignTest.campaignRender();});
+  assert.ok((await card.innerText()).includes('STALE SOURCE'));
+  await card.locator('.cc_campaign_source summary').click();
+  await page.waitForFunction(()=>document.querySelector('.cc_campaign_source pre')?.textContent.includes('Source changed or disappeared'));
+  assert.ok((await card.locator('pre').textContent()).includes('Source changed or disappeared'));
+  assert.equal(await page.evaluate(()=>campaignTest.campaignSelect('Jericho')),'');
+  await card.locator('.cc_campaign_source summary').click();
+  await page.evaluate(()=>{testContext.chatMetadata={};});
+  await card.locator('.cc_campaign_source summary').click();
+  await page.waitForFunction(()=>document.querySelector('.cc_campaign_source pre')?.textContent.includes('active chat changed'));
+  assert.ok((await card.locator('pre').textContent()).includes('active chat changed'));
   await page.locator('#chatassist_campaign > summary').click();
   assert.deepEqual(errors,[]);
-  console.log(`${width}px ${populated?'populated':'empty'} session: APP_READY real panel row visible, hittable and expands PASS`);
+  console.log(`${width}px ${populated?'populated':'empty'} session: APP_READY real panel row visible, hittable, expands; source review/accept/staleness PASS`);
   await page.close();
  }
 } finally { await browser.close(); }
