@@ -1226,7 +1226,9 @@
             const bodyStart = whole.length - original.length;
             if (whole.slice(bodyStart) !== original) throw new Error('Campaign source reader mismatch; nothing saved.');
             const body = whole.slice(bodyStart);
-            const text = whole.slice(0, bodyStart) + spans.map(span => '\n[SOURCE SPAN ' + span.id + ']\n' + body.slice(span.start, span.end)).join('');
+            const text = whole.slice(0, bodyStart) + spans.map((span, first) => '\n[SOURCE SPAN ' + span.id + '; chars=' + (span.end - span.start)
+                + '; validEnds=' + (campaignRangeChoices(original, spans, first).map(choice => choice.end + '=' + choice.chars).join(',') || 'none')
+                + ']\n' + body.slice(span.start, span.end)).join('');
             if (chars + text.length + (blocks.length ? 2 : 0) > 24000) {
                 if (!blocks.length) throw new Error('RP message #' + next + ' exceeds the 24,000-character audit budget. It was not skipped; choose a later start or shorten that message before auditing it.');
                 break;
@@ -1261,24 +1263,46 @@
         }
         return spans;
     }
+    function campaignRangeSize(text) {
+        const chars = text.length, evidenceChars = text.trim().length;
+        return { chars, evidenceChars, issue: evidenceChars < 8 ? 'too_short' : chars > 1200 ? 'too_long' : null };
+    }
+    function campaignRangeChoices(text, spans, first) {
+        // Same inclusive offsets and size policy as validation. Advertise only
+        // permitted endpoints; these prove size, never semantic support.
+        const choices = [];
+        for (let last = first; last < spans.length && last < first + 4; last++) {
+            const size = campaignRangeSize(text.slice(spans[first].start, spans[last].end));
+            if (!size.issue) choices.push({ end: spans[last].id, chars: size.chars });
+        }
+        return choices;
+    }
     function campaignAnchor(source, range, candidate) {
         if (!range || typeof range !== 'object' || Array.isArray(range)
             || Object.keys(range).length !== 2 || typeof range.start !== 'string' || typeof range.end !== 'string') {
-            campaignInvalid(candidate, 'sourceSpanRange', 'expected an object with start and end span IDs; arrays and recreated quotes are not evidence');
+            campaignInvalid(candidate, 'sourceSpanRange', 'expected an object with start and end span IDs; arrays and recreated quotes are not evidence', { category: 'range_structure' });
         }
         const spans = source.spans || [];
         const first = spans.findIndex(span => span.id === range.start);
         const last = spans.findIndex(span => span.id === range.end);
-        if (first < 0 || last < 0) campaignInvalid(candidate, 'sourceSpanRange', (first < 0 ? 'start' : 'end') + ' span was not supplied for this message in this audit batch', { sourceIndex: source.index });
-        if (first > last) campaignInvalid(candidate, 'sourceSpanRange', 'start must not follow end; reversed ranges are not repaired', { sourceIndex: source.index });
+        if (first < 0 || last < 0) campaignInvalid(candidate, 'sourceSpanRange', (first < 0 ? 'start' : 'end') + ' span was not supplied for this message in this audit batch', { category: 'range_structure', sourceIndex: source.index });
+        if (first > last) campaignInvalid(candidate, 'sourceSpanRange', 'start must not follow end; reversed ranges are not repaired', { category: 'range_structure', sourceIndex: source.index });
         const count = last - first + 1;
-        if (count > 4) campaignInvalid(candidate, 'sourceSpanRange', 'range exceeds maximum of 4 spans', { sourceIndex: source.index, count });
+        if (count > 4) campaignInvalid(candidate, 'sourceSpanRange', 'range exceeds maximum of 4 spans', { category: 'range_size', sourceIndex: source.index, count, maxSpans: 4 });
         // Expand both endpoints inclusively. The model never enumerates the
         // interior, and cannot omit dialogue/thought spans between endpoints.
         const selected = spans.slice(first, last + 1);
         const start = selected[0].start, end = selected[selected.length - 1].end;
         const text = source.text.slice(start, end);
-        if (text.trim().length < 8 || text.length > 1200) campaignInvalid(candidate, 'sourceSpanRange', 'selected evidence must contain 8–1200 source characters', { sourceIndex: source.index, actualChars: text.length });
+        const size = campaignRangeSize(text);
+        if (size.issue) {
+            const reason = size.issue === 'too_short' ? 'too short: ' + size.evidenceChars + ' chars after outer whitespace'
+                : 'too long: ' + size.chars + ' source chars';
+            // Trimming to a permitted endpoint could remove the actual support
+            // or a qualification and alter provenance. Never guess relevance.
+            campaignInvalid(candidate, 'sourceSpanRange', 'valid endpoints, ' + reason + ' (8–1200 required)',
+                { category: 'range_size', issue: size.issue, sourceIndex: source.index, actualChars: size.chars, evidenceChars: size.evidenceChars, minChars: 8, maxChars: 1200 });
+        }
         return { start, end, text, spanIds: selected.map(span => span.id) };
     }
     function campaignEvidence(text, match, declared) {
@@ -1393,7 +1417,7 @@
                 store.next = batch.next; saveMeta(); campaignRender();
                 toast('No visible RP messages in this batch. Next message: #' + batch.next + '.', 'info'); return;
             }
-            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","sourceSpanRange":{"start":"M0:S1","end":"M0:S1"},"related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Use sourceSpanRange, an object with start and end SOURCE SPAN IDs from the cited message. For one span, use the same ID for both endpoints. For multiple spans, provide only the first and last IDs; code includes every intervening span. Start must not follow end. Select the smallest continuous range supporting the whole fact: at most 4 spans including both endpoints, and 8–1200 original characters. Do not return a span array or disjoint ranges. These labels are extension annotations, not RP. Never invent IDs or reproduce a quote: the extension copies the original source text. A span containing speech or thoughts is conservatively classified as a claim even if it also contains narration. Do not use a narration-only span to support a claim found only in neighboring dialogue. If no supplied span range supports the whole fact, omit the record. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
+            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: HARD EVIDENCE LIMIT: every record must use a sourceSpanRange with 8–1200 source characters and at most 4 spans. Choose the end ONLY from validEnds printed on the chosen start span; do not estimate lengths. Invalid evidence rejects the ENTIRE batch. Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","sourceSpanRange":{"start":"M0:S1","end":"M0:S1"},"related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Use sourceSpanRange, an object with start and end SOURCE SPAN IDs from the cited message. For one span, use the same ID for both endpoints. For multiple spans, provide only the first and last IDs; code includes every intervening span. Start must not follow end. Select the smallest continuous range supporting the whole fact. Each SOURCE SPAN label gives chars (its exact length) and validEnds (allowed end ID=total inclusive range characters). validEnds is computed by code using BOTH limits: at most 4 spans, and 8–1200 original characters. For example, 3 spans of 600 chars total 1800 and are INVALID even though there are fewer than 4 spans; 2 of 600 total 1200 and meet the size limit. A 7-character range is INVALID. Counts include Markdown, spaces, newlines and punctuation, using UTF-16 code units; the minimum requires 8 characters after trimming only outer whitespace. Trust the printed validEnds counts instead of counting yourself. If validEnds=none, do not start a record there. A permitted endpoint proves size only: verify that the entire fact is supported by that exact continuous range. Never shorten a claim by dropping a qualification, speech or thought context merely to fit. If no permitted range supports it, omit that record. Before returning JSON, check EACH record: its end must appear in its start span’s validEnds list, in the cited message. Do not return a span array or disjoint ranges. These labels are extension annotations, not RP. Never invent IDs or reproduce a quote: the extension copies the original source text. A span containing speech or thoughts is conservatively classified as a claim even if it also contains narration. Do not use a narration-only span to support a claim found only in neighboring dialogue. If no supplied span range supports the whole fact, omit the record. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
             const raw = await callLLM([{ role: 'system', content: prompt }, { role: 'user', content: batch.text }], null, 8192);
             if (!sameChat(chatAt) || stopRequested) return;
             const records = campaignParse(raw, batch.sources);
