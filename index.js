@@ -1261,18 +1261,25 @@
         }
         return spans;
     }
-    function campaignAnchor(source, ids, candidate) {
-        if (!Array.isArray(ids) || !ids.length || ids.length > 4 || ids.some(id => typeof id !== 'string')) {
-            campaignInvalid(candidate, 'sourceSpanIds', 'expected 1–4 source span IDs; recreated quotes are not evidence');
+    function campaignAnchor(source, range, candidate) {
+        if (!range || typeof range !== 'object' || Array.isArray(range)
+            || Object.keys(range).length !== 2 || typeof range.start !== 'string' || typeof range.end !== 'string') {
+            campaignInvalid(candidate, 'sourceSpanRange', 'expected an object with start and end span IDs; arrays and recreated quotes are not evidence');
         }
         const spans = source.spans || [];
-        const selected = ids.map(id => spans.findIndex(span => span.id === id));
-        if (selected.some(n => n < 0)) campaignInvalid(candidate, 'sourceSpanIds', 'span was not supplied for this message in this audit batch', { sourceIndex: source.index });
-        if (selected.some((n, i) => i && n !== selected[i - 1] + 1)) campaignInvalid(candidate, 'sourceSpanIds', 'spans must be consecutive, unique and in source order', { sourceIndex: source.index });
-        const start = spans[selected[0]].start, end = spans[selected[selected.length - 1]].end;
+        const first = spans.findIndex(span => span.id === range.start);
+        const last = spans.findIndex(span => span.id === range.end);
+        if (first < 0 || last < 0) campaignInvalid(candidate, 'sourceSpanRange', (first < 0 ? 'start' : 'end') + ' span was not supplied for this message in this audit batch', { sourceIndex: source.index });
+        if (first > last) campaignInvalid(candidate, 'sourceSpanRange', 'start must not follow end; reversed ranges are not repaired', { sourceIndex: source.index });
+        const count = last - first + 1;
+        if (count > 4) campaignInvalid(candidate, 'sourceSpanRange', 'range exceeds maximum of 4 spans', { sourceIndex: source.index, count });
+        // Expand both endpoints inclusively. The model never enumerates the
+        // interior, and cannot omit dialogue/thought spans between endpoints.
+        const selected = spans.slice(first, last + 1);
+        const start = selected[0].start, end = selected[selected.length - 1].end;
         const text = source.text.slice(start, end);
-        if (text.trim().length < 8 || text.length > 1200) campaignInvalid(candidate, 'sourceSpanIds', 'selected evidence must contain 8–1200 source characters', { sourceIndex: source.index, actualChars: text.length });
-        return { start, end, text, spanIds: ids.slice() };
+        if (text.trim().length < 8 || text.length > 1200) campaignInvalid(candidate, 'sourceSpanRange', 'selected evidence must contain 8–1200 source characters', { sourceIndex: source.index, actualChars: text.length });
+        return { start, end, text, spanIds: selected.map(span => span.id) };
     }
     function campaignEvidence(text, match, declared) {
         let quote = null, start = 0, thought = declared === 'thought', dialogue = declared === 'dialogue';
@@ -1321,7 +1328,7 @@
                 row[field] = row[field].trim();
                 if (row[field].length > limit) campaignInvalid(candidate, field, 'field exceeds character limit', { actualChars: row[field].length, maxChars: limit });
             }
-            const match = campaignAnchor(source, row.sourceSpanIds, candidate);
+            const match = campaignAnchor(source, row.sourceSpanRange, candidate);
             row.related = row.related == null ? [] : typeof row.related === 'string' ? [row.related] : row.related;
             if (!Array.isArray(row.related) || row.related.length > 8) campaignInvalid(candidate, 'related', 'expected at most 8 related entity names');
             row.related = row.related.map((name, n) => {
@@ -1386,7 +1393,7 @@
                 store.next = batch.next; saveMeta(); campaignRender();
                 toast('No visible RP messages in this batch. Next message: #' + batch.next + '.', 'info'); return;
             }
-            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","sourceSpanIds":["M0:S1"],"related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Use sourceSpanIds, an array of 1–4 consecutive SOURCE SPAN IDs from the cited message, in source order. Select the smallest supplied span range supporting the whole fact (8–1200 original characters). These labels are extension annotations, not RP. Never invent IDs or reproduce a quote: the extension copies the original source text. A span containing speech or thoughts is conservatively classified as a claim even if it also contains narration. Do not use a narration-only span to support a claim found only in neighboring dialogue. If no supplied span range supports the whole fact, omit the record. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
+            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","sourceSpanRange":{"start":"M0:S1","end":"M0:S1"},"related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Use sourceSpanRange, an object with start and end SOURCE SPAN IDs from the cited message. For one span, use the same ID for both endpoints. For multiple spans, provide only the first and last IDs; code includes every intervening span. Start must not follow end. Select the smallest continuous range supporting the whole fact: at most 4 spans including both endpoints, and 8–1200 original characters. Do not return a span array or disjoint ranges. These labels are extension annotations, not RP. Never invent IDs or reproduce a quote: the extension copies the original source text. A span containing speech or thoughts is conservatively classified as a claim even if it also contains narration. Do not use a narration-only span to support a claim found only in neighboring dialogue. If no supplied span range supports the whole fact, omit the record. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
             const raw = await callLLM([{ role: 'system', content: prompt }, { role: 'user', content: batch.text }], null, 8192);
             if (!sameChat(chatAt) || stopRequested) return;
             const records = campaignParse(raw, batch.sources);
