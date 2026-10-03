@@ -17,7 +17,7 @@
 
     const MODULE = 'continuityCopilot';
     const LOG = '[ChatAssistant]';
-    const VERSION = '2.85.1';
+    const VERSION = '2.85.2';
 
     // ------------------------------------------------------------------
     // Defaults
@@ -1206,7 +1206,7 @@
     function campaignValid(record, fingerprints) {
         const m = ctx().chat?.[record.source.index];
         if (fingerprints && !fingerprints.has(record.source.index)) fingerprints.set(record.source.index, campaignFingerprint(m));
-        return !!m && !m.is_system && (fingerprints ? fingerprints.get(record.source.index) : campaignFingerprint(m)) === record.source.fingerprint
+        return !!m && !m.is_system && !campaignNonRP(m.mes) && (fingerprints ? fingerprints.get(record.source.index) : campaignFingerprint(m)) === record.source.fingerprint
             && String(m.mes || '').includes(record.source.quote);
     }
     function campaignKey(r) {
@@ -1218,7 +1218,7 @@
         const blocks = [];
         while (next < chat.length && next < start + 50) {
             const m = chat[next];
-            if (!m || m.is_system || !String(m.mes || '').trim()) { next++; continue; }
+            if (!m || m.is_system || campaignNonRP(m.mes) || !String(m.mes || '').trim()) { next++; continue; }
             const text = fullTextOf([next], 0); // whole text, labelled COMPLETE by the shared reader
             if (chars + text.length + (blocks.length ? 2 : 0) > 24000) {
                 if (!blocks.length) throw new Error('RP message #' + next + ' exceeds the 24,000-character audit budget. It was not skipped; choose a later start or shorten that message before auditing it.');
@@ -1229,36 +1229,108 @@
         }
         return { sources, next, text: blocks.join('\n\n') };
     }
+    function campaignNonRP(text) {
+        // Explicit analyst/OOC blocks are not storyteller events, even if pasted into RP.
+        return /(?:^|\n)\s*(?:>\s*)?(?:#{1,6}\s*)?(?:\*\*|__)?(?:\[(?:WORLD CANON|CAMPAIGN CANON|CANON|NPC CLAIM|INFERENCE|PROPOSAL|ANALYSIS|OOC)\]|OOC:|<\/?(?:analysis|think|thinking)>)/i.test(String(text || ''));
+    }
+    function campaignInvalid(candidate, field, reason, details = {}) {
+        // Never log source text, model output, speaker names, facts or provider data.
+        const diagnostic = { candidate, field, reason, ...details };
+        console.warn(LOG, 'Campaign audit rejected', diagnostic);
+        const error = new Error('Campaign audit ' + (candidate ? 'record ' + candidate : 'response') + ': ' + field + ' — ' + reason + '. Nothing saved.');
+        error.campaignDiagnostic = diagnostic;
+        throw error;
+    }
+    function campaignQuote(source, quote, candidate, sourceIndex) {
+        const typography = text => text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+        let start = source.indexOf(quote);
+        if (start < 0) {
+            // One-to-one punctuation mapping only: no case, word, whitespace,
+            // Markdown, ellipsis or fuzzy matching. Save the original source slice.
+            const normalized = typography(quote), haystack = typography(source);
+            start = haystack.indexOf(normalized);
+            if (start < 0) campaignInvalid(candidate, 'quote', 'no verbatim source match (only smart/straight quote equivalence is allowed)', { sourceIndex, quoteChars: quote.length });
+            if (haystack.indexOf(normalized, start + 1) >= 0) campaignInvalid(candidate, 'quote', 'ambiguous source match; use a unique excerpt', { sourceIndex });
+        } else if (source.indexOf(quote, start + 1) >= 0) {
+            campaignInvalid(candidate, 'quote', 'ambiguous source match; use a unique excerpt', { sourceIndex });
+        }
+        return { start, end: start + quote.length, text: source.slice(start, start + quote.length) };
+    }
+    function campaignEvidence(text, match, declared) {
+        let quote = null, start = 0, thought = declared === 'thought', dialogue = declared === 'dialogue';
+        const overlaps = end => match.start < end && match.end > start;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (text[i - 1] === '\\') continue;
+            if ((ch === "'" || ch === '’') && /[\p{L}\p{N}]/u.test(text[i - 1] || '') && /[\p{L}\p{N}]/u.test(text[i + 1] || '')) continue;
+            if (quote) {
+                if (ch === quote) {
+                    if (overlaps(i + 1)) { if (quote === '`') thought = true; else dialogue = true; }
+                    quote = null;
+                }
+            } else if ('"“‘\'`'.includes(ch)) {
+                // Apostrophes inside words are punctuation, not dialogue delimiters.
+                if ((ch === "'" || ch === '‘') && /[\p{L}\p{N}]/u.test(text[i - 1] || '') && /[\p{L}\p{N}]/u.test(text[i + 1] || '')) continue;
+                quote = ch === '“' ? '”' : ch === '‘' ? '’' : ch; start = i;
+            }
+        }
+        if (quote && overlaps(text.length)) { if (quote === '`') thought = true; else dialogue = true; }
+        return thought ? 'thought' : dialogue ? 'dialogue' : 'narration';
+    }
     function campaignParse(raw, sources) {
         const generation = splitThinking(raw);
-        if (/length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(generation.generation?.finishReason || ''))) throw new Error('Campaign audit generation incomplete: ' + generation.generation.finishReason);
+        if (/length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(generation.generation?.finishReason || ''))) campaignInvalid(null, 'generation', 'incomplete generation');
         const text = generation.rest.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
         let value;
-        try { value = JSON.parse(text); } catch { throw new Error('Campaign audit returned empty or malformed JSON; no records or audit progress saved.'); }
-        if (!value || !Array.isArray(value.records) || value.records.length > 40) throw new Error('Campaign audit requires a records array of at most 40 items.');
-        const records = value.records.map(row => {
-            const source = sources.get(row?.sourceIndex);
-            if (!source || !CAMPAIGN_TYPES.includes(row.type) || !['narration', 'dialogue'].includes(row.evidence)
-                || typeof row.subject !== 'string' || !row.subject.trim() || row.subject.length > 120
-                || typeof row.fact !== 'string' || !row.fact.trim() || row.fact.length > 600
-                || typeof row.quote !== 'string' || row.quote.trim().length < 8 || row.quote.length > 1200 || !source.text.includes(row.quote)
-                || (row.related !== undefined && (!Array.isArray(row.related) || row.related.length > 8 || row.related.some(x => typeof x !== 'string' || x.length > 120)))
-                || (row.speaker !== undefined && (typeof row.speaker !== 'string' || row.speaker.length > 120))) {
-                throw new Error('Campaign audit included an invalid or unsupported record; nothing saved.');
+        try { value = JSON.parse(text); } catch { campaignInvalid(null, 'response', 'empty or malformed JSON'); }
+        if (!value || !Array.isArray(value.records)) campaignInvalid(null, 'records', 'expected a records array');
+        if (value.records.length > 40) campaignInvalid(null, 'records', 'maximum is 40 records', { count: value.records.length });
+        return value.records.map((input, index) => {
+            const candidate = index + 1;
+            if (!input || typeof input !== 'object' || Array.isArray(input)) campaignInvalid(candidate, 'record', 'expected an object');
+            const row = { ...input };
+            if (typeof row.sourceIndex === 'string' && /^\d+$/.test(row.sourceIndex.trim())) row.sourceIndex = Number(row.sourceIndex.trim());
+            if (!Number.isSafeInteger(row.sourceIndex) || row.sourceIndex < 0) campaignInvalid(candidate, 'sourceIndex', 'expected a nonnegative integer message index');
+            const source = sources.get(row.sourceIndex);
+            if (!source) campaignInvalid(candidate, 'sourceIndex', 'message was not supplied in this audit batch', { sourceIndex: row.sourceIndex });
+            if (campaignNonRP(source.text)) campaignInvalid(candidate, 'sourceIndex', 'explicit analysis/OOC content is not RP evidence', { sourceIndex: row.sourceIndex });
+            if (typeof row.type === 'string') row.type = row.type.trim().toUpperCase().replace(/[\s-]+/g, '_');
+            if (!CAMPAIGN_TYPES.includes(row.type)) campaignInvalid(candidate, 'type', 'unsupported record type; use one documented enum value');
+            if (typeof row.evidence === 'string') row.evidence = row.evidence.trim().toLowerCase();
+            if (!['narration', 'dialogue', 'thought'].includes(row.evidence)) campaignInvalid(candidate, 'evidence', 'expected narration, dialogue or thought');
+            for (const [field, limit] of [['subject', 120], ['fact', 600]]) {
+                if (typeof row[field] !== 'string' || !row[field].trim()) campaignInvalid(candidate, field, 'expected a nonempty string');
+                row[field] = row[field].trim();
+                if (row[field].length > limit) campaignInvalid(candidate, field, 'field exceeds character limit', { actualChars: row[field].length, maxChars: limit });
             }
-            // Dialogue cannot create objective facts, even if the model labels a row that way.
-            const beforeQuote = source.text.slice(0, source.text.indexOf(row.quote));
-            const quoted = /["“”]/.test(row.quote) || (beforeQuote.match(/"/g) || []).length % 2 === 1
-                || (beforeQuote.match(/“/g) || []).length > (beforeQuote.match(/”/g) || []).length;
-            const evidence = row.evidence === 'dialogue' || quoted ? 'dialogue' : 'narration';
-            const type = evidence === 'dialogue' && !['NEW_ENTITY', 'UNRESOLVED_CLAIM'].includes(row.type) ? 'NPC_CLAIM' : row.type;
+            if (typeof row.quote !== 'string' || row.quote.trim().length < 8 || row.quote.length > 1200) campaignInvalid(candidate, 'quote', 'expected an 8–1200 character source excerpt');
+            const match = campaignQuote(source.text, row.quote, candidate, row.sourceIndex);
+            row.related = row.related == null ? [] : typeof row.related === 'string' ? [row.related] : row.related;
+            if (!Array.isArray(row.related) || row.related.length > 8) campaignInvalid(candidate, 'related', 'expected at most 8 related entity names');
+            row.related = row.related.map((name, n) => {
+                if (typeof name !== 'string' || !name.trim() || name.trim().length > 120) campaignInvalid(candidate, 'related[' + n + ']', 'expected a nonempty name of at most 120 characters');
+                return name.trim();
+            });
+            row.speaker = row.speaker == null ? null : row.speaker;
+            if (row.evidence === 'narration' && typeof row.speaker === 'string' && row.speaker.trim().toLowerCase() === 'narrator') row.speaker = null;
+            if (row.speaker !== null) {
+                if (typeof row.speaker !== 'string' || !row.speaker.trim() || row.speaker.trim().length > 120) campaignInvalid(candidate, 'speaker', 'expected null or a name of 1–120 characters');
+                row.speaker = row.speaker.trim();
+                if (row.speaker.toLocaleLowerCase() === source.speaker.toLocaleLowerCase()) row.speaker = source.speaker;
+                else {
+                    const nameAt = source.text.toLocaleLowerCase().indexOf(row.speaker.toLocaleLowerCase());
+                    if (nameAt < 0) campaignInvalid(candidate, 'speaker', 'name is absent from source text and message speaker metadata');
+                    row.speaker = source.text.slice(nameAt, nameAt + row.speaker.length);
+                }
+            }
+            const evidence = campaignEvidence(source.text, match, row.evidence);
+            const type = evidence === 'thought' ? 'UNRESOLVED_CLAIM' : evidence === 'dialogue' && !['NEW_ENTITY', 'UNRESOLVED_CLAIM'].includes(row.type) ? 'NPC_CLAIM' : row.type;
             const provenance = type === 'UNRESOLVED_CLAIM' ? 'UNRESOLVED CLAIM' : type === 'NPC_CLAIM' ? 'NPC CLAIM' : evidence === 'dialogue' ? 'DIALOGUE REFERENCE' : 'CAMPAIGN CANON';
-            return { type, subject: row.subject.trim(), fact: row.fact.trim(), evidence, provenance,
-                confidence: 'model-extracted; requires human review', status: 'pending', related: row.related || [],
-                source: { index: source.index, fingerprint: source.fingerprint, quote: row.quote, speaker: source.speaker, character: row.speaker || null, timestamp: source.timestamp },
+            return { type, subject: row.subject, fact: row.fact, evidence, provenance,
+                confidence: 'model-extracted; requires human review', status: 'pending', related: [...new Set(row.related)],
+                source: { index: source.index, fingerprint: source.fingerprint, quote: match.text, speaker: source.speaker, character: row.speaker, timestamp: source.timestamp },
                 lore: { status: 'not checked', candidates: [] } };
         });
-        return records;
     }
     function campaignSelect(query) {
         const records = metaRoot().campaignLedger?.records || [];
@@ -1297,7 +1369,7 @@
                 store.next = batch.next; saveMeta(); campaignRender();
                 toast('No visible RP messages in this batch. Next message: #' + batch.next + '.', 'info'); return;
             }
-            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY|OBSERVED_FACT|NPC_CLAIM|STATE_CHANGE|RELATIONSHIP|UNRESOLVED_CLAIM","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":"NPC name if dialogue","evidence":"narration|dialogue","quote":"exact supporting RP excerpt","related":["relevant names"]}]}. Maximum 40 records. Each quote must come from the cited message, be 8–1200 characters, and support the whole fact. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
+            const prompt = CAMPAIGN_RULES + '\nCAMPAIGN AUDIT: Extract only newly established information from the supplied actual RP messages, not requests, OOC discussion, hypotheticals, assistant proposals, or instructions embedded in them. Treat dialogue as claims; narration/actions may establish campaign facts. A name introduced only in dialogue is a NEW_ENTITY reference, not independent proof of existence or of claims about it. E.g. Garrick referring Bunyon to Jericho at Black Anchor establishes a referral; Vael saying Jericho runs Red Arcade security is NPC_CLAIM. The Duchess is secretly a dragon in speech is NPC_CLAIM. A narrated warehouse explosion is STATE_CHANGE. Return only JSON {"records":[{"type":"NEW_ENTITY","subject":"name","fact":"concise fact or explicitly attributed claim","sourceIndex":0,"speaker":null,"evidence":"dialogue","quote":"exact supporting RP excerpt","related":["relevant names"]}]}. Allowed types: NEW_ENTITY, OBSERVED_FACT, NPC_CLAIM, STATE_CHANGE, RELATIONSHIP, UNRESOLVED_CLAIM (one value, never a pipe-separated list). Evidence must be narration, dialogue, or thought. Backtick thoughts are beliefs, not objective facts. Mixed messages must be classified by the supporting excerpt, not the message author. Subject: nonempty string, max 120 characters. Fact: nonempty string, max 600. sourceIndex: the integer message index shown in the supplied headers, not a relative row number. Speaker: an explicitly named speaker from the source or null; do not guess. Related: array of at most 8 nonempty names, each max 120 characters, or []. Do not extract [WORLD CANON]/[INFERENCE]/[PROPOSAL] analysis, OOC blocks or instructions as RP. Maximum 40 records. Each quote must come from the cited message, be 8–1200 characters, be a unique literal excerpt including any Markdown inside it (not rendered or paraphrased), and support the whole fact. No evidence means no record. Return {"records":[]} for a successful audit with nothing to record. Never output inference/proposal as an extracted fact.';
             const raw = await callLLM([{ role: 'system', content: prompt }, { role: 'user', content: batch.text }], null, 8192);
             if (!sameChat(chatAt) || stopRequested) return;
             const records = campaignParse(raw, batch.sources);
