@@ -4,6 +4,67 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.87.0 — Author’s Note approval bridge
+
+Ask Chat Assistant to read, review, replace, append to, clear, or compose the
+current chat’s Author’s Note. For example: “Update my Author’s Note for the
+current scene using the location, present NPCs and unresolved danger. Keep it
+under 400 tokens.” Read is non-destructive. Every mutation opens a separate
+**Current / Proposed** review dialog with **Apply / Cancel**; append includes
+the resulting full note, and clear requires **Clear Author’s Note**. Escape
+cancels. Model output never writes the note, and there is no background updater.
+
+The structured contract is one `<authorsnote>` JSON object with `operation`:
+`READ`, `PROPOSE_REPLACE`, `PROPOSE_APPEND`, or `PROPOSE_CLEAR`. Replace/append
+require a nonempty string `content`; clear/read take no content. Invalid,
+incomplete, mixed or multiple operations fail without writing. Raw control
+blocks are hidden from the normal response. Proposals are transient and cannot
+be replayed after Cancel, Apply, chat change or reload.
+
+The bridge reads SillyTavern’s live `chatMetadata.note_prompt` (with the native
+`extensionSettings.note.default` fallback). It keeps no independent note store.
+After approval it calls `updateChatMetadata({note_prompt: text}, false)`, awaits
+`saveMetadata()`, then uses `reloadCurrentChat()` to refresh SillyTavern’s own
+Author’s Note controls and prompt state and verifies the reloaded value. This
+also supports a genuinely empty note. It does not scrape/edit ST textareas,
+simulate clicks or interpolate note contents into slash commands. Depth, role,
+interval, position and other metadata are preserved. The existing generic
+`memedits` path for `note_prompt` is retired so it cannot bypass this review and
+synchronization route; other memory and Director edit paths remain available.
+
+The proposal captures the current chat identity, metadata instance and note
+value. Any changed base note or active chat blocks Apply and requires a fresh
+proposal. Save/refresh failures trigger a guarded rollback of only our text;
+newer external edits and other chats are never overwritten by recovery. Native
+save errors can be swallowed by SillyTavern, so the reload/read-back check is
+required before reporting success. If recovery cannot be verified, the bridge
+reports that uncertainty and asks the user to inspect the note; it never claims
+that an unverified write succeeded. Switching chat after a confirmed save can
+leave that approved change saved in the original chat; the destination chat is
+not refreshed or modified. Save/reload APIs and a stable chat ID are required
+for writes; unsupported hosts fail without changing text.
+
+Author’s Note is short, intentional storyteller guidance. World Info remains
+static lore; Campaign Ledger remains accepted playthrough memory. Composition
+reuses current/recent RP, bounded accepted/source-valid campaign retrieval and
+the existing selective lore tools. It does not inject pending records, search
+or send entire lorebooks, copy the whole ledger, or write World Info. Current
+lore-discovery settings still control its normal selective research behavior.
+The bridge neither proves a generated note’s semantic accuracy nor guarantees
+a model’s requested token budget: the proposal remains for human review.
+
+Regression tests cover read/empty/unavailable state, all three proposal/approval
+and cancellation paths, stale notes/chats, failure recovery, native read-back,
+metadata preservation, parser failures, generic-write bypass prevention and a
+READ → existing lore fetch → proposal workflow with accepted-only campaign
+context. Browser tests exercise the confirmation UI at 360, 412 and 1280 px,
+alongside Campaign Ledger review and mobile layout checks. Campaign Ledger,
+lore algorithms, mobile fixes and Director/session behavior were not redesigned.
+
+Integration was checked against SillyTavern’s
+[Author’s Note state](https://github.com/SillyTavern/SillyTavern/blob/staging/public/scripts/authors-note.js)
+and [extension context APIs](https://github.com/SillyTavern/SillyTavern/blob/staging/public/scripts/st-context.js).
+
 ## v2.86.0 — Message-anchored Campaign Ledger and human review
 
 Campaign Audit now extracts **pending candidates anchored to an actual RP
