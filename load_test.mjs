@@ -47,6 +47,7 @@ const byId = new Map();
 function makeEl(tag) {
     const el = {
         tagName: String(tag || 'div').toUpperCase(),
+        showModal() { this.open = true; },
         children: [], style: {}, dataset: {},
         _class: new Set(),
         classList: {
@@ -189,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, anRead, anParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -1031,7 +1032,7 @@ console.log('== v2.69.0 invariants: the stop flag belongs to the RUN, not to one
 // the user had already cancelled.
 ok(/function beginRun\(\) \{\n        running = true;\n        stopRequested = false;\n        setBusy\(true\);\n    \}/.test(SRC), 'beginRun() is the one place a run starts: takes the lock AND clears the stop flag');
 ok((SRC.match(/\n        running = true;/g) || []).length === 1, 'the lock is taken in exactly one place (beginRun), nowhere else');
-ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 10, 'all 10 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 10)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
+ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 11, 'all 11 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 11)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
 ok(!/const maxTok = [^\n]*\n        stopRequested = false;/.test(SRC), 'callLLM no longer clears the stop flag');
 ok(/if \(stopRequested\) return '';\n        try \{ abortCtl = new AbortController/.test(SRC), 'callLLM refuses to open a request when the run is already stopped');
 
@@ -1281,12 +1282,12 @@ ok(ctx.chatMetadata.summaryception.ledger.chars[1].state.includes('registrar'), 
 // (g) A key this extension AUTO-CREATED is deleted again by the undo, not left
 // behind as an empty string the user never had.
 dismissPending();
-delete ctx.chatMetadata.note_prompt;
-await driveAsk('<memedits>[{"path":"note_prompt","replace":"Keep the tone dry."}]</memedits>');
-ok(ctx.chatMetadata.note_prompt === 'Keep the tone dry.', 'sim setup: writing to an absent note_prompt created it');
+delete ctx.chatMetadata.cc_critique;
+await driveAsk('<memedits>[{"path":"cc_critique","replace":"Keep the tone dry."}]</memedits>');
+ok(ctx.chatMetadata.cc_critique === 'Keep the tone dry.', 'sim setup: writing to an absent cc_critique created it');
 clickFresh('chatassist_undo');
 await sleep(400);
-ok(!Object.prototype.hasOwnProperty.call(ctx.chatMetadata, 'note_prompt'), 'undo removed the key the apply created, rather than leaving an empty string behind');
+ok(!Object.prototype.hasOwnProperty.call(ctx.chatMetadata, 'cc_critique'), 'undo removed the key the apply created, rather than leaving an empty string behind');
 
 console.log('== v2.72.0: a message is served WHOLE, or it says it was not ==');
 // Regression this pack exists for: fullTextOf did `.slice(0, 8000)` with NO marker.
@@ -2706,6 +2707,114 @@ ctx.chat=sourceChat;
 campaign.campaignReview(storeMessages.records[0].id,'rejected');
 ok(!campaign.campaignSelect('coin'), 'rejected records remain excluded');
 ctx.chatMetadata={}; ctx.chat=[];
+
+console.log('== Author Note approval bridge ==');
+const an=campaign;
+CA.directorMode='off'; CA.critiqueAuto=0; CA.wiDiscovery=false;
+ctx.chatId='an-A';ctx.chat=[{name:'Narrator',mes:'The travelers reach the Veracruz wharf.'}];
+const originalNote={note_prompt:'At the wharf.',note_interval:3,note_position:1,note_depth:4,note_role:0,unrelated:{keep:true}};
+ctx.chatMetadata=structuredClone(originalNote);
+let anSaves=0,anReloads=0,anDisk=structuredClone(ctx.chatMetadata);
+ctx.updateChatMetadata=(values,reset)=>{ctx.chatMetadata=reset?{...values}:{...ctx.chatMetadata,...values};};
+ctx.saveMetadata=async()=>{anSaves++;anDisk=structuredClone(ctx.chatMetadata);};
+ctx.reloadCurrentChat=async()=>{anReloads++;ctx.chatMetadata=structuredClone(anDisk);};
+const operation=(operation,content)=>an.anParse('<authorsnote>'+JSON.stringify({operation,...(content===undefined?{}:{content})})+'</authorsnote>');
+const propose=(operationName,content)=>an.anPropose(operation(operationName,content),an.anRead());
+ok(an.anRead().text==='At the wharf.' && anSaves===0,'READ uses actual metadata without saving');
+ctx.chatMetadata.note_prompt='';ok(an.anRead().text==='' && anSaves===0,'READ distinguishes an empty initialized note');
+ctx.chatMetadata.note_prompt=originalNote.note_prompt;
+for(const [op,content,expected] of [['PROPOSE_REPLACE','Concise current scene.','Concise current scene.'],['PROPOSE_APPEND','Unresolved danger.','At the wharf.\nUnresolved danger.'],['PROPOSE_CLEAR',undefined,'']]) {
+ ctx.chatMetadata=structuredClone(originalNote);anDisk=structuredClone(originalNote);
+ const saves=anSaves;
+ let proposal=propose(op,content);
+ ok(ctx.chatMetadata.note_prompt===originalNote.note_prompt && anSaves===saves,op+' prepares a preview without mutating');
+ an.anCancel(proposal);
+ ok(await an.anApply(proposal)===false && ctx.chatMetadata.note_prompt===originalNote.note_prompt && anSaves===saves,op+' Cancel prevents any write, including replay');
+ proposal=propose(op,content);
+ ok(await an.anApply(proposal)===true && ctx.chatMetadata.note_prompt===expected && anDisk.note_prompt===expected,op+' explicit Apply writes and verifies persisted text');
+ const {note_prompt,...settingsAfter}=ctx.chatMetadata;const {note_prompt:oldText,...settingsBefore}=originalNote;
+ ok(JSON.stringify(settingsAfter)===JSON.stringify(settingsBefore),op+' preserves note depth, interval, position, role and unrelated metadata');
+ ok(await an.anApply(proposal)===false,op+' cannot be applied twice');
+}
+ok(anSaves===3 && anReloads===3,'successful writes use native saveMetadata and reloadCurrentChat exactly once each');
+ctx.chatMetadata=structuredClone(originalNote);
+let pendingAn=propose('PROPOSE_REPLACE','must not leak');
+const oldMdAn=ctx.chatMetadata;ctx.chatId='an-B';ctx.chatMetadata={note_prompt:'Chat B'};
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt==='Chat B' && oldMdAn.note_prompt==='At the wharf.','chat switch before confirmation writes to neither chat');
+ctx.chatId='an-A';ctx.chatMetadata=structuredClone(originalNote);
+for(const op of ['PROPOSE_REPLACE','PROPOSE_APPEND','PROPOSE_CLEAR']) {
+ ctx.chatMetadata=structuredClone(originalNote);
+ const p=propose(op,op==='PROPOSE_CLEAR'?undefined:'new');ctx.chatMetadata.note_prompt='External newer note';
+ ok(await an.anApply(p)===false && ctx.chatMetadata.note_prompt==='External newer note','external change blocks stale '+op);
+}
+ctx.chatMetadata=structuredClone(originalNote);
+const beforeInvalidAn=JSON.stringify(ctx.chatMetadata),beforeSavesAn=anSaves;
+for(const raw of ['<authorsnote>{bad}</authorsnote>','<authorsnote>{"operation":"WRITE","content":"bad"}</authorsnote>','<authorsnote>{"operation":"PROPOSE_REPLACE"}</authorsnote>','<authorsnote>{"operation":"PROPOSE_CLEAR","content":"bad"}</authorsnote>','<authorsnote>{"operation":"READ"}</authorsnote><authorsnote>{"operation":"READ"}</authorsnote>','<authorsnote>{"operation":"READ"}</authorsnote><memedits>[]</memedits>','<authorsnote>{"operation":"PROPOSE_APPEND","content":"unfinished"}']) {
+ let rejected=false;try{an.anParse(raw);}catch{rejected=true;}
+ ok(rejected && JSON.stringify(ctx.chatMetadata)===beforeInvalidAn && anSaves===beforeSavesAn,'malformed/mixed/direct-write operation cannot mutate note');
+}
+operation('READ');ok(JSON.stringify(ctx.chatMetadata)===beforeInvalidAn,'parsing READ never changes state');
+let missingBase=false;try{an.anPropose(operation('PROPOSE_CLEAR'),null);}catch{missingBase=true;}
+ok(missingBase && JSON.stringify(ctx.chatMetadata)===beforeInvalidAn,'model cannot propose a change without a captured successful read');
+delete ctx.chatMetadata.note_prompt;const defaultBefore=ctx.extensionSettings.note;ctx.extensionSettings.note={default:'Default note'};
+ok(an.anRead().text==='Default note' && !('note_prompt' in ctx.chatMetadata),'uninitialized chat note reads ST default without creating a shadow copy');
+delete ctx.extensionSettings.note;let unreadable=false;try{an.anRead();}catch{unreadable=true;}
+ok(unreadable,'missing/uninitialized Author Note is reported, not invented as empty');ctx.extensionSettings.note=defaultBefore;
+ctx.chatMetadata=structuredClone(originalNote);
+const realAnSave=ctx.saveMetadata,realAnReload=ctx.reloadCurrentChat;
+ctx.saveMetadata=async()=>{throw new Error('storage unavailable');};
+pendingAn=propose('PROPOSE_REPLACE','must roll back');
+ok(await an.anApply(pendingAn)===false && JSON.stringify(ctx.chatMetadata)===JSON.stringify(originalNote),'failed save restores original text without changing settings');
+ctx.saveMetadata=realAnSave;
+ctx.reloadCurrentChat=async()=>{throw new Error('reload unavailable');};
+pendingAn=propose('PROPOSE_CLEAR');
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt===originalNote.note_prompt && anDisk.note_prompt===originalNote.note_prompt,'failed synchronization rolls back persisted text');
+ctx.reloadCurrentChat=realAnReload;
+ctx.chatMetadata=structuredClone(originalNote);anDisk=structuredClone(originalNote);
+ctx.saveMetadata=async()=>{}; // Native ST can swallow a server save error.
+pendingAn=propose('PROPOSE_REPLACE','not actually persisted');
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt===originalNote.note_prompt && anDisk.note_prompt===originalNote.note_prompt,'reload verification detects a silently failed native save');
+ctx.saveMetadata=realAnSave;
+ctx.reloadCurrentChat=realAnReload;
+ctx.saveMetadata=async()=>{await realAnSave();ctx.chatMetadata.note_prompt='External edit while saving';};
+pendingAn=propose('PROPOSE_REPLACE','temporary');
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt==='External edit while saving','concurrent external edit is preserved rather than overwritten by reload or rollback');
+ctx.saveMetadata=realAnSave;
+ctx.chatMetadata=structuredClone(originalNote);
+const reloadsBeforeSwitch=anReloads;
+ctx.saveMetadata=async()=>{await realAnSave();ctx.chatId='an-other-during-save';ctx.chatMetadata={note_prompt:'Other chat kept'};};
+pendingAn=propose('PROPOSE_REPLACE','approved in A');
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt==='Other chat kept' && anReloads===reloadsBeforeSwitch,'switch during save never refreshes or rewrites the destination chat');
+ctx.chatId='an-A';
+ctx.saveMetadata=realAnSave;
+ctx.chatMetadata=structuredClone(originalNote);
+await driveAsk('<memedits>[{"path":"note_prompt","replace":"bypass"}]</memedits>');
+ok(ctx.chatMetadata.note_prompt===originalNote.note_prompt,'legacy generic memory edit cannot bypass the Author Note approval/synchronization path');
+// Exercise normal user generation with a READ continuation and proposal, using
+// existing campaign/lore context machinery rather than another generation flow.
+ctx.chatMetadata=structuredClone(originalNote);ctx.chatId='an-workflow';
+const workflowLedger=campaign.campaignStore();
+const workflowRecord={type:'NPC_CLAIM',subject:'Jericho',fact:'APPROVED_JERICHO: Vael mentioned him.',evidence:'dialogue',status:'accepted',related:[],source:{index:0,fingerprint:campaign.campaignFingerprint(ctx.chat[0]),speaker:'Narrator'}};
+workflowLedger.records.push({...workflowRecord,id:'AN-accepted'},{...workflowRecord,id:'AN-pending',status:'pending',fact:'PENDING_JERICHO_SECRET'});
+CA.wiDiscovery=true;CA.wiBooks='AuthorNoteLore';ctx.loadWorldInfo=async()=>({entries:{0:{uid:0,key:['Jericho'],comment:'Jericho',content:'LORE_CANON: Jericho watches the wharf.'}}});
+let anCalls=0,anMessages=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,messages)=>{anCalls++;anMessages.push(structuredClone(messages));return anCalls===1?'<authorsnote>{"operation":"READ"}</authorsnote>':anCalls===2?'<wifetch>["AuthorNoteLore#0"]</wifetch>':'<authorsnote>{"operation":"PROPOSE_REPLACE","content":"Veracruz wharf. Await Jericho; his allegiance is unverified."}</authorsnote>';};
+document.getElementById('chatassist_input').value="Update my Author's Note about Jericho for the current scene. Keep under 400 tokens.";
+clickFresh('chatassist_send');
+await sleep(1500);
+ok(anCalls===3 && anMessages[1].some(m=>m.content.includes('[CURRENT AUTHOR NOTE')) && ctx.chatMetadata.note_prompt===originalNote.note_prompt, 'normal user generation reads note and produces a proposal without writing');
+ok(JSON.stringify(anMessages).includes('APPROVED_JERICHO') && !JSON.stringify(anMessages).includes('PENDING_JERICHO_SECRET') && anMessages.at(-1).some(m=>m.content.includes('LORE_CANON')), 'Author Note composition reuses bounded accepted campaign context and existing selective lore fetch');
+an.anCancel();CA.wiDiscovery=false;
+ctx.ConnectionManagerRequestService.sendRequest=async()=>({choices:[{message:{content:'<authorsnote>{"operation":"PROPOSE_REPLACE","content":"truncated proposal"}</authorsnote>'},finish_reason:'length'}]});
+document.getElementById('chatassist_input').value="Replace my Author's Note.";clickFresh('chatassist_send');await sleep(1500);
+ok(an.anPendingProposal()===null && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'token-truncated Author Note generation cannot stage even parseable proposal JSON');
+const savedUpdateAPI=ctx.updateChatMetadata;delete ctx.updateChatMetadata;
+pendingAn=propose('PROPOSE_CLEAR');
+ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'unsupported host fails before modifying any note text');ctx.updateChatMetadata=savedUpdateAPI;
+pendingAn=propose('PROPOSE_CLEAR');
+for(const handler of handlers.get('CHAT_CHANGED')||[]) await handler();
+ok(an.anPendingProposal()===null && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'native chat-change notification cancels the pending note card');
+ctx.chatMetadata={};ctx.chat=[];
 
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');

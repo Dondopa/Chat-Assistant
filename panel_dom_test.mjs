@@ -18,7 +18,7 @@ try {
    window.SillyTavern={getContext:()=>testContext};
    window.$=window.jQuery=element=>({on:(type,handler)=>element.addEventListener(type,handler)});
   },populated);
-  await page.addScriptTag({content:readFileSync(new URL('index.js',import.meta.url),'utf8').replace('    // Fallback in case APP_READY', '    window.campaignTest = { campaignBatch, campaignParse, campaignStore, campaignRender, campaignSelect };\n    // Fallback in case APP_READY')});
+  await page.addScriptTag({content:readFileSync(new URL('index.js',import.meta.url),'utf8').replace('    // Fallback in case APP_READY', '    window.campaignTest = { campaignBatch, campaignParse, campaignStore, campaignRender, campaignSelect, anRead, anParse, anPropose };\n    // Fallback in case APP_READY')});
   await page.evaluate(()=>ready.forEach(fn=>fn()));
   assert.equal(await page.locator('#chatassist_panel #chatassist_campaign > summary').count(),1,'APP_READY must build the row in the real panel');
   await page.locator('#chatassist_menu_item').click();
@@ -62,8 +62,41 @@ try {
   await page.waitForFunction(()=>document.querySelector('.cc_campaign_source pre')?.textContent.includes('active chat changed'));
   assert.ok((await card.locator('pre').textContent()).includes('active chat changed'));
   await page.locator('#chatassist_campaign > summary').click();
+  await page.evaluate(()=>{
+   testContext.chatId='author-note-ui';testContext.chatMetadata={note_prompt:'Keep the harbor tense.',note_interval:3,note_depth:7,note_role:0,note_position:1};
+   window.noteDisk=structuredClone(testContext.chatMetadata);window.noteWrites=0;
+   testContext.updateChatMetadata=(values,reset)=>{testContext.chatMetadata=reset?{...values}:{...testContext.chatMetadata,...values};};
+   testContext.saveMetadata=async()=>{window.noteWrites++;window.noteDisk=structuredClone(testContext.chatMetadata);};
+   testContext.reloadCurrentChat=async()=>{testContext.chatMetadata=structuredClone(window.noteDisk);};
+   window.proposeAN=(op,content)=>campaignTest.anPropose(campaignTest.anParse('<authorsnote>'+JSON.stringify({operation:op,...(content===undefined?{}:{content})})+'</authorsnote>'),campaignTest.anRead());
+  });
+  for(const operation of ['PROPOSE_REPLACE','PROPOSE_APPEND','PROPOSE_CLEAR']) {
+   await page.evaluate(op=>proposeAN(op,op==='PROPOSE_CLEAR'?undefined:'<b>Literal note</b> | /note never execute this'),operation);
+   const dialog=page.locator('#chatassist_an_dialog');
+   assert.ok(await dialog.isVisible());
+   assert.equal(await page.evaluate(()=>noteWrites),0,'proposal is not a write');
+   assert.ok((await dialog.locator('pre').textContent()).includes('Current:'));
+   assert.equal(await dialog.locator('pre b').count(),0,'proposal displays literal text, not HTML');
+   const rect=await dialog.boundingBox();assert.ok(rect.x>=0 && rect.x+rect.width<=width+1 && rect.y>=0,'proposal fits mobile/desktop width');
+   await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+   assert.equal(await page.evaluate(()=>testContext.chatMetadata.note_prompt),'Keep the harbor tense.');
+  }
+  await page.evaluate(()=>proposeAN('PROPOSE_APPEND','Remember Jericho.'));
+  await page.locator('#chatassist_an_apply').click();
+  await page.waitForFunction(()=>testContext.chatMetadata.note_prompt==='Keep the harbor tense.\nRemember Jericho.');
+  assert.equal(await page.evaluate(()=>noteDisk.note_prompt),'Keep the harbor tense.\nRemember Jericho.');
+  assert.equal(await page.evaluate(()=>testContext.chatMetadata.note_depth),7);
+  await page.evaluate(()=>proposeAN('PROPOSE_CLEAR'));
+  await page.locator('#chatassist_an_dialog').getByRole('button',{name:'Clear Author’s Note',exact:true}).click();
+  await page.waitForFunction(()=>noteDisk.note_prompt==='');
+  await page.evaluate(()=>{proposeAN('PROPOSE_REPLACE','must not overwrite');testContext.chatMetadata.note_prompt='New external note';});
+  await page.locator('#chatassist_an_apply').click();
+  assert.equal(await page.evaluate(()=>testContext.chatMetadata.note_prompt),'New external note');
+  await page.evaluate(()=>{proposeAN('PROPOSE_REPLACE','must not leak');testContext.chatId='other-chat';testContext.chatMetadata={note_prompt:'Other chat'};});
+  await page.locator('#chatassist_an_apply').click();
+  assert.equal(await page.evaluate(()=>testContext.chatMetadata.note_prompt),'Other chat');
   assert.deepEqual(errors,[]);
-  console.log(`${width}px ${populated?'populated':'empty'} session: APP_READY real panel row visible, hittable, expands; source review/accept/staleness PASS`);
+  console.log(`${width}px ${populated?'populated':'empty'} session: APP_READY real panel row visible, hittable, expands; source review/accept/staleness + Author Note approval PASS`);
   await page.close();
  }
 } finally { await browser.close(); }
