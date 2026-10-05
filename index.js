@@ -1218,6 +1218,42 @@
             || (content && (typeof op.content !== 'string' || !op.content.trim()))) throw new Error('Invalid Author’s Note content; use PROPOSE_CLEAR to clear.');
         return op;
     }
+    function anIsNoteEdit(edit) {
+        const tokens = memPathTokens(edit.path || '');
+        return tokens[0] === 'note_prompt';
+    }
+    // Older conversation history can still elicit memedits. Translate only a
+    // single, exact note edit into the SAME approval bridge; never generic Apply.
+    function anLegacyParse(reply, base) {
+        const parsed = parseMemEdits(reply);
+        if (!parsed.edits.some(anIsNoteEdit)) return null;
+        if (!base) throw new Error('Author’s Note edit needs a current read. Ask explicitly to update your Author’s Note. Nothing written.');
+        const blocks = [...String(reply).matchAll(/<memedits>\s*([\s\S]*?)\s*<\/memedits>/gi)];
+        if (blocks.length !== 1 || /<(?:edits|wiedits|fetch|wisearch|wifetch)\b/i.test(reply)) throw new Error('Author’s Note changes must be proposed separately from other edits. Nothing written.');
+        let edits;
+        try { edits = JSON.parse(blocks[0][1]); } catch { throw new Error('Invalid Author’s Note memory-edit JSON. Nothing written.'); }
+        if (!Array.isArray(edits) || edits.length !== 1) throw new Error('Propose one Author’s Note change at a time. Nothing written.');
+        const e = edits[0], tokens = memPathTokens(e.path || '');
+        if (tokens.length !== 1 || tokens[0] !== 'note_prompt' || Object.keys(e).some(k => !['path', 'find', 'replace', 'append', 'reason'].includes(k))) throw new Error('Unsupported Author’s Note edit shape. Nothing written.');
+        const append = Object.prototype.hasOwnProperty.call(e, 'append');
+        if (append) {
+            if (e.find != null || e.replace !== undefined || typeof e.append !== 'string' || !e.append.trim()) throw new Error('Invalid Author’s Note append. Nothing written.');
+            return { operation: 'PROPOSE_APPEND', content: e.append };
+        }
+        if (typeof e.replace !== 'string') throw new Error('Invalid Author’s Note replacement. Nothing written.');
+        let result = e.replace;
+        if (e.find != null) {
+            if (typeof e.find !== 'string' || !e.find || base.text.indexOf(e.find) < 0 || base.text.indexOf(e.find) !== base.text.lastIndexOf(e.find)) throw new Error('Author’s Note edit must match the current note exactly and uniquely. Nothing written.');
+            result = base.text.replace(e.find, () => e.replace);
+        }
+        if (result && !result.trim()) throw new Error('Use an explicit clear operation for an empty Author’s Note. Nothing written.');
+        return result ? { operation: 'PROPOSE_REPLACE', content: result } : { operation: 'PROPOSE_CLEAR' };
+    }
+    function anReport(message, type) {
+        // Keep the result in the panel even if a toast expires or is unavailable.
+        addBubble('note', message);
+        toast(message, type);
+    }
     function anCancel(proposal = anPending) {
         if (!proposal) return;
         proposal.dialog?.remove();
@@ -1255,13 +1291,13 @@
     }
     async function anApply(proposal) {
         if (proposal !== anPending || !proposal) return false;
-        if (running) { toast('Wait for the current operation to finish before applying.', 'warning'); return false; }
+        if (running) { anReport('Wait for the current operation to finish before applying.', 'warning'); return false; }
         let wrote = false, writtenMd = null, c;
         try {
             if (!anSameBase(proposal.base)) throw new Error('Author’s Note or active chat changed. Regenerate the proposal; nothing written.');
             c = ctx();
             if (!proposal.base.chat.id || typeof c.updateChatMetadata !== 'function' || typeof c.saveMetadata !== 'function' || typeof c.reloadCurrentChat !== 'function') throw new Error('This SillyTavern version lacks the chat save/reload APIs needed for a safe Author’s Note update.');
-        } catch (e) { anCancel(proposal); toast(e.message, 'error'); return false; }
+        } catch (e) { anCancel(proposal); anReport(e.message, 'error'); return false; }
         anCancel(proposal);
         beginRun();
         try {
@@ -1275,7 +1311,7 @@
             await c.reloadCurrentChat();
             if (!sameChat(proposal.base.chat)) throw new Error('Chat changed during refresh.');
             if (anRead().text !== proposal.result) throw new Error('Saved Author’s Note could not be verified after reloading.');
-            toast('Author’s Note saved.', 'success'); return true;
+            anReport('Author’s Note saved and verified.', 'success'); return true;
         } catch (e) {
             // Restore only our text, never newer external edits or another chat.
             let recovery = '';
@@ -1291,7 +1327,7 @@
                     } catch { recovery = ' Persistence recovery could not be verified. Check the note before continuing.'; }
                 }
             }
-            toast('Author’s Note update failed: ' + e.message + recovery, 'error'); return false;
+            anReport('Author’s Note update failed: ' + e.message + recovery, 'error'); return false;
         } finally { running = false; setBusy(false); }
     }
 
@@ -4380,8 +4416,8 @@
                     toast('Lore generation incomplete: ' + split.failure, 'error');
                     return; // Never stage edits or store partial prose as a completed answer.
                 }
-                if (/<\/?authorsnote\b/i.test(reply) && /length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(split.generation?.finishReason || ''))) throw new Error('Author’s Note generation was incomplete; no proposal prepared.');
-                const anOperation = anParse(reply);
+                const anOperation = anParse(reply) || anLegacyParse(reply, anBase);
+                if (anOperation && /length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(split.generation?.finishReason || ''))) throw new Error('Author’s Note generation was incomplete; no proposal prepared.');
                 if (anOperation) {
                     if (anOperation.operation === 'READ') {
                         try { anBase = anRead(); } catch (e) { reply = 'Author’s Note read failed: ' + e.message; break; }
@@ -4590,7 +4626,10 @@
                 : 'no lorebook is selected \u2014 open/activate a World Info book in SillyTavern, or set one in Chat Assistant\u2019s Worldbook settings';
             addBubble('note', '\u26A0 The assistant proposed Worldbook changes, but nothing was staged because ' + why + '. Fix that and ask again.');
         }
-        const allEdits = [...parsed.edits, ...parsedMem.edits, ...parsedWi.edits];
+        // Other generation flows must not stage a generic note card that their
+        // Apply handler is forbidden to write. Only the note bridge can stage it.
+        if (parsedMem.edits.some(anIsNoteEdit)) anReport('Author’s Note change not staged: ask to update your Author’s Note through its approval dialog. Nothing written.', 'error');
+        const allEdits = [...parsed.edits, ...parsedMem.edits.filter(e => !anIsNoteEdit(e)), ...parsedWi.edits];
         let didSupersede = 0;
         const supersedeLabels = parseSupersede(reply);
         if (supersedeLabels.length && pendingEdits.length) {
