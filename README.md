@@ -4,6 +4,40 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.87.1 — Route legacy Author’s Note edits through the approval bridge
+
+Fixed the live-shaped APPEND failure where the correct combined text appeared
+in a red/green **memory** card but Apply left Author’s Note unchanged. Older
+conversation history can still cause models to emit `memedits` for `note_prompt`.
+v2.87.0 staged those cards even though its generic writer deliberately rejected
+note writes. Its memory fallback could then replace the useful refusal with an
+incorrect “text appears in neither memory nor chat” message. The native note
+update/save/reload path was never reached. This routing bug could affect both
+REPLACE and APPEND; it was not loss of the appended suffix during saving.
+
+A single supported legacy note edit from an Author’s Note request now goes to
+the existing **Author’s Note change** dialog. Explicit string append, whole-note
+replacement, and an exact unique find/replacement are supported. Conversion
+uses the note read before generation; it does not recapture a newer note to
+bypass staleness. Inexact anchors, malformed/mixed/multiple operations and
+unsupported shapes fail closed. Other generation flows cannot stage generic
+note cards. Generic `memedits` still cannot write Author’s Note. The preferred
+`authorsnote` contract, approval step, native persistence and stale guards remain.
+
+Apply success is reported only after native save/reload and authoritative
+read-back verification. Failures and stale refusals now also remain visible in
+the Chat Assistant panel, rather than depending on a transient toast. No new
+storage, write mechanism or automatic updates were added.
+
+Regression tests click the production Apply event for empty/nonempty REPLACE
+and APPEND, the exact Tolkien + combat-coherence case, and multiline append.
+They verify the combined preview, actual metadata, completed persistence,
+authoritative read-back, another reload, and unchanged note settings. Browser
+tests also send the legacy model response through the real Send → confirmation
+→ Apply controls. Save failures, old-value reloads, stale proposals and Cancel
+are covered. Campaign Ledger, lore algorithms, Director/session behavior and
+mobile layout/opening remain unchanged.
+
 ## v2.87.0 — Author’s Note approval bridge
 
 Ask Chat Assistant to read, review, replace, append to, clear, or compose the
