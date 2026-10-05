@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, anRead, anParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -2814,6 +2814,85 @@ ok(await an.anApply(pendingAn)===false && ctx.chatMetadata.note_prompt===origina
 pendingAn=propose('PROPOSE_CLEAR');
 for(const handler of handlers.get('CHAT_CHANGED')||[]) await handler();
 ok(an.anPendingProposal()===null && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'native chat-change notification cancels the pending note card');
+console.log('== v2.87.1 Author Note production Apply and legacy-card regression ==');
+ctx.chatId='an-real-apply';ctx.chat=[{name:'Narrator',mes:'The travelers reach the wharf.'}];
+const savedContextGetter=SillyTavern.getContext;
+SillyTavern.getContext=()=>({...ctx}); // ST returns a fresh context snapshot.
+ctx.saveMetadata=realAnSave;ctx.reloadCurrentChat=realAnReload;
+const applyCases=[
+ ['PROPOSE_REPLACE','','Replacement','Replacement'],
+ ['PROPOSE_REPLACE','Existing Tolkien directive','Replacement','Replacement'],
+ ['PROPOSE_APPEND','','Combat coherence directive','Combat coherence directive'],
+ ['PROPOSE_APPEND','Existing Tolkien directive','Combat coherence directive','Existing Tolkien directive\nCombat coherence directive'],
+ ['PROPOSE_APPEND','Existing Tolkien directive\nKeep the prose lyrical.','Combat coherence directive\nTrack positions.','Existing Tolkien directive\nKeep the prose lyrical.\nCombat coherence directive\nTrack positions.'],
+];
+for(const [op,existing,content,expected] of applyCases) {
+ ctx.chatMetadata={...structuredClone(originalNote),note_prompt:existing};anDisk=structuredClone(ctx.chatMetadata);
+ const settingsBefore=JSON.stringify({...ctx.chatMetadata,note_prompt:undefined}),savesBefore=anSaves,reloadsBefore=anReloads;
+ pendingAn=propose(op,content);
+ ok(pendingAn.result===expected && ctx.chatMetadata.note_prompt===existing && anSaves===savesBefore,op+' real card previews exact combined value before any write');
+ clickFresh('chatassist_an_apply');await sleep(30);
+ ok(ctx.chatMetadata.note_prompt===expected && an.anRead().text===expected && anDisk.note_prompt===expected && anSaves===savesBefore+1 && anReloads===reloadsBefore+1,op+' real Apply listener saves and authoritatively verifies '+(existing?'non-empty':'empty')+' note');
+ await ctx.reloadCurrentChat();
+ ok(an.anRead().text===expected && JSON.stringify({...ctx.chatMetadata,note_prompt:undefined})===settingsBefore,'approved exact note survives another reload with settings intact');
+}
+// Reproduce the red/green card: old model history emits memedits, not authorsnote.
+// Production must route it to the note dialog, never to the forbidden generic writer.
+for(const legacy of [
+ {path:'note_prompt',find:'Existing Tolkien directive',replace:'Existing Tolkien directive\nCombat coherence directive'},
+ {path:'note_prompt',append:'Combat coherence directive'},
+]) {
+ ctx.chatMetadata={...structuredClone(originalNote),note_prompt:'Existing Tolkien directive'};anDisk=structuredClone(ctx.chatMetadata);
+ ctx.ConnectionManagerRequestService.sendRequest=async()=>'<memedits>'+JSON.stringify([legacy])+'</memedits>';
+ document.getElementById('chatassist_input').value="Append the combat coherence directive to my Author's Note, preserving the Tolkien directive.";
+ clickFresh('chatassist_send');await sleep(600);
+ const candidate=an.anPendingProposal();
+ ok(candidate?.result==='Existing Tolkien directive\nCombat coherence directive','legacy red/green note edit is routed to the authoritative approval bridge');
+ if(candidate) {clickFresh('chatassist_an_apply');await sleep(30);}
+ ok(anDisk.note_prompt==='Existing Tolkien directive\nCombat coherence directive' && an.anRead().text===anDisk.note_prompt,'model response → production confirmation Apply → persisted combined note');
+ await ctx.reloadCurrentChat();ok(an.anRead().text==='Existing Tolkien directive\nCombat coherence directive','legacy append remains after independent reload');
+}
+ctx.chatMetadata=structuredClone(originalNote);
+for(const bad of [
+ [{path:'note_prompt',find:'Wharf',replace:'wrong'}],
+ [{path:'note_prompt',find:'.',replace:'x'},{path:'note_prompt',append:'y'}],
+ [{path:'note_prompt',append:'x',replace:'y'}],
+ [{path:'note_prompt.child',replace:'x'}],
+ [{path:'note_prompt',replace:{text:'x'}}],
+ [{path:'note_prompt',replace:'x',unknown:true}],
+ [{path:'note_prompt',append:5}],
+]) {
+ let rejected=false;try{an.anLegacyParse('<memedits>'+JSON.stringify(bad)+'</memedits>',an.anRead());}catch{rejected=true;}
+ ok(rejected && an.anRead().text===originalNote.note_prompt,'legacy note contract rejects inexact, multiple, ambiguous or invalid edits');
+}
+for(const [reply,base] of [
+ ['<memedits>[{"path":"note_prompt","replace":"x"}]</memedits>',null],
+ ['<memedits>[{"path":"note_prompt","replace":"x"}]</memedits><fetch>[0]</fetch>',an.anRead()],
+ ['<memedits>[{"path":"note_prompt","replace":"x"}]</memedits><memedits>[{"path":"note_prompt","replace":"y"}]</memedits>',an.anRead()],
+]) {
+ let rejected=false;try{an.anLegacyParse(reply,base);}catch{rejected=true;}
+ ok(rejected,'legacy note proposal rejects missing baseline or mixed/multiple tool blocks');
+}
+const legacyBefore=anSaves,legacyLog=ccLogText().length;
+an.ingestProposals('<memedits>[{"path":"note_prompt","replace":"must not stage"}]</memedits>');
+ok(an.pendingNoteCards()===0 && anSaves===legacyBefore && ccLogText().slice(legacyLog).join(' ').includes('Author’s Note change not staged'),'other generation flows cannot stage dead generic note cards and report why');
+for(const failure of ['save','old-reload','stale']) {
+ ctx.chatMetadata=structuredClone(originalNote);anDisk=structuredClone(originalNote);
+ const beforeLog=ccLogText().length,beforeToasts=toasts.length;
+ ctx.saveMetadata=failure==='save'?async()=>{throw new Error('disk write rejected');}:realAnSave;
+ ctx.reloadCurrentChat=failure==='old-reload'?async()=>{ctx.chatMetadata=structuredClone(originalNote);}:realAnReload;
+ propose('PROPOSE_APPEND','Combat coherence directive');
+ if(failure==='stale')ctx.chatMetadata.note_prompt='External note';
+ clickFresh('chatassist_an_apply');await sleep(30);
+ const messages=ccLogText().slice(beforeLog).join(' ');
+ ok(/failed|changed/.test(messages) && !toasts.slice(beforeToasts).some(t=>t==='Author’s Note saved and verified.'),failure+' real Apply reports persistent visible failure and never success');
+ ok(ctx.chatMetadata.note_prompt===(failure==='stale'?'External note':originalNote.note_prompt),failure+' real Apply does not retain the proposed value');
+}
+ctx.saveMetadata=realAnSave;ctx.reloadCurrentChat=realAnReload;
+ctx.chatMetadata=structuredClone(originalNote);const cancelWrites=anSaves;
+propose('PROPOSE_APPEND','cancel this');clickFresh('chatassist_an_cancel');await sleep(30);
+ok(anSaves===cancelWrites && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'real Cancel listener remains non-mutating');
+SillyTavern.getContext=savedContextGetter;
 ctx.chatMetadata={};ctx.chat=[];
 
 console.log('');

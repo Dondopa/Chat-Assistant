@@ -15,7 +15,8 @@ try {
    window.ready=[];
    const history=populated ? Array.from({length:40},()=>({role:'assistant',content:'A long existing campaign discussion. '.repeat(150)})) : [];
    window.testContext={chat:[],chatMetadata:{continuityCopilot:{sessions:[{id:1,name:'Session 1',history}],activeId:1}},extensionSettings:{},characters:[],characterId:0,name1:'User',name2:'Narrator',event_types:{APP_READY:'APP_READY'},eventSource:{on:(e,fn)=>{if(e==='APP_READY')ready.push(fn)}},saveSettingsDebounced(){},saveMetadata(){},setExtensionPrompt(){},registerSlashCommand(){}};
-   window.SillyTavern={getContext:()=>testContext};
+   window.SillyTavern={getContext:()=>({...testContext})};
+   window.noteFeedback=[];window.toastr=Object.fromEntries(['info','warning','error','success'].map(type=>[type,message=>noteFeedback.push({type,message})]));
    window.$=window.jQuery=element=>({on:(type,handler)=>element.addEventListener(type,handler)});
   },populated);
   await page.addScriptTag({content:readFileSync(new URL('index.js',import.meta.url),'utf8').replace('    // Fallback in case APP_READY', '    window.campaignTest = { campaignBatch, campaignParse, campaignStore, campaignRender, campaignSelect, anRead, anParse, anPropose };\n    // Fallback in case APP_READY')});
@@ -81,6 +82,74 @@ try {
    await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
    assert.equal(await page.evaluate(()=>testContext.chatMetadata.note_prompt),'Keep the harbor tense.');
   }
+  // Actual DOM events, native-like metadata replacement, async durable storage
+  // and fresh getContext snapshots. Verify success only after save + read-back.
+  for(const [op,existing,content,expected] of [
+   ['PROPOSE_REPLACE','','Replacement','Replacement'],
+   ['PROPOSE_REPLACE','Existing Tolkien directive','Replacement','Replacement'],
+   ['PROPOSE_APPEND','','Combat coherence directive','Combat coherence directive'],
+   ['PROPOSE_APPEND','Existing Tolkien directive','Combat coherence directive','Existing Tolkien directive\nCombat coherence directive'],
+   ['PROPOSE_APPEND','Existing Tolkien directive\nKeep lyricism.','Combat coherence directive\nTrack positions.','Existing Tolkien directive\nKeep lyricism.\nCombat coherence directive\nTrack positions.'],
+  ]) {
+   await page.evaluate(({op,existing,content})=>{
+    testContext.chatMetadata={note_prompt:existing,note_depth:7,note_interval:3,note_position:1,note_role:0};noteDisk=structuredClone(testContext.chatMetadata);noteFeedback=[];
+    window.noteSaveDone=false;window.noteReadbacks=0;
+    testContext.saveMetadata=async()=>{await new Promise(r=>setTimeout(r,25));noteWrites++;noteDisk=structuredClone(testContext.chatMetadata);noteSaveDone=true;};
+    testContext.reloadCurrentChat=async()=>{if(!noteSaveDone)throw Error('reload before persistence');testContext.chatMetadata=structuredClone(noteDisk);noteReadbacks++;};
+    proposeAN(op,content);
+   },{op,existing,content});
+   assert.ok((await page.locator('#chatassist_an_preview').textContent()).includes(expected));
+   assert.equal(await page.evaluate(()=>noteDisk.note_prompt),existing);
+   await page.locator('#chatassist_an_apply').click();
+   await page.waitForFunction(()=>noteFeedback.some(x=>x.type==='success'&&x.message==='Author’s Note saved and verified.'));
+   assert.deepEqual(await page.evaluate(()=>({text:campaignTest.anRead().text,disk:noteDisk.note_prompt,done:noteSaveDone,reads:noteReadbacks})),{text:expected,disk:expected,done:true,reads:1});
+   await page.evaluate(()=>testContext.reloadCurrentChat());
+   assert.equal(await page.evaluate(()=>campaignTest.anRead().text),expected,'persisted value survives independent reload');
+   assert.deepEqual(await page.evaluate(()=>{const {note_prompt,...rest}=testContext.chatMetadata;return rest}),{note_depth:7,note_interval:3,note_position:1,note_role:0});
+  }
+  // The live red/green path: an older model reply still uses memedits for AN.
+  // Send through the real Send control and require the authoritative dialog.
+  for(const legacy of [
+   {path:'note_prompt',find:'Existing Tolkien directive',replace:'Existing Tolkien directive\nCombat coherence directive'},
+   {path:'note_prompt',append:'Combat coherence directive'},
+  ]) {
+   await page.evaluate(legacy=>{
+    testContext.chatMetadata={note_prompt:'Existing Tolkien directive',note_depth:7};noteDisk=structuredClone(testContext.chatMetadata);noteFeedback=[];
+    Object.assign(testContext.extensionSettings.continuityCopilot,{profileId:'test',streaming:false,wiDiscovery:false,directorMode:'off',critiqueAuto:0});
+    testContext.ConnectionManagerRequestService={sendRequest:async()=>'<memedits>'+JSON.stringify([legacy])+'</memedits>'};
+   },legacy);
+   await page.locator('#chatassist_input').fill("Append Combat coherence directive to my Author's Note and preserve Tolkien.");
+   await page.locator('#chatassist_send').click();
+   await page.locator('#chatassist_an_dialog').waitFor({state:'visible'});
+   assert.equal(await page.locator('#chatassist_edits [data-cc-apply]').count(),0,'no dead generic Apply card');
+   assert.ok((await page.locator('#chatassist_an_preview').textContent()).includes('Existing Tolkien directive\nCombat coherence directive'));
+   await page.waitForFunction(()=>!document.querySelector('#chatassist_send').disabled);
+   await page.locator('#chatassist_an_apply').click();
+   await page.waitForFunction(()=>noteFeedback.some(x=>x.type==='success'&&x.message==='Author’s Note saved and verified.'));
+   assert.equal(await page.evaluate(()=>noteDisk.note_prompt),'Existing Tolkien directive\nCombat coherence directive');
+   await page.evaluate(()=>testContext.reloadCurrentChat());
+   assert.equal(await page.evaluate(()=>campaignTest.anRead().text),'Existing Tolkien directive\nCombat coherence directive');
+  }
+  for(const failure of ['save','old-reload','stale']) {
+   await page.evaluate(failure=>{
+    testContext.chatMetadata={note_prompt:'Existing Tolkien directive',note_depth:7};noteDisk=structuredClone(testContext.chatMetadata);noteFeedback=[];
+    testContext.saveMetadata=async()=>{if(failure==='save')throw Error('disk failure');noteDisk=structuredClone(testContext.chatMetadata);};
+    testContext.reloadCurrentChat=async()=>{testContext.chatMetadata=structuredClone(failure==='old-reload'?{note_prompt:'Existing Tolkien directive',note_depth:7}:noteDisk);};
+    proposeAN('PROPOSE_APPEND','Combat coherence directive');
+    if(failure==='stale')testContext.chatMetadata.note_prompt='New external note';
+   },failure);
+   await page.locator('#chatassist_an_apply').click();
+   await page.waitForFunction(()=>noteFeedback.some(x=>x.type==='error'));
+   const failureMessage=await page.evaluate(()=>noteFeedback.find(x=>x.type==='error').message);
+   assert.ok((await page.locator('#chatassist_log').innerText()).includes(failureMessage),'failure stays visible in panel, not only a transient toast');
+   assert.equal(await page.evaluate(()=>noteFeedback.some(x=>x.type==='success')),false);
+   assert.equal(await page.evaluate(()=>campaignTest.anRead().text),failure==='stale'?'New external note':'Existing Tolkien directive');
+  }
+  await page.evaluate(()=>{
+   testContext.chatMetadata={note_prompt:'Keep the harbor tense.',note_depth:7};noteDisk=structuredClone(testContext.chatMetadata);
+   testContext.saveMetadata=async()=>{noteWrites++;noteDisk=structuredClone(testContext.chatMetadata);};
+   testContext.reloadCurrentChat=async()=>{testContext.chatMetadata=structuredClone(noteDisk);};
+  });
   await page.evaluate(()=>proposeAN('PROPOSE_APPEND','Remember Jericho.'));
   await page.locator('#chatassist_an_apply').click();
   await page.waitForFunction(()=>testContext.chatMetadata.note_prompt==='Keep the harbor tense.\nRemember Jericho.');
