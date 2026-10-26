@@ -4,6 +4,77 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## Phase 1 preview — v2.88.0-phase1.1
+
+Experimental Director lore discovery is **off by default**. This feature branch
+adds read-only evidence to the existing episode planner; it does not simulate
+NPCs, create off-screen events, track plots or maintain another database.
+
+### Try it in SillyTavern
+
+Use branch `feature/director-lore-discovery-phase1` of this extension, refresh,
+and confirm the preview version in the panel. Open Chat Assistant Settings and
+enable **Experimental: Director lore discovery (Phase 1, off by default)**.
+Use your usual active/bound lorebooks, or the existing manual Worldbook selection
+(which overrides auto-discovery). Save settings. Ask the Director for **New**,
+**Next**, or an episode **Seed** around an institution/place in the current RP.
+Use **Peek** to inspect the resulting directive. Turn the checkbox off and save
+to restore baseline planning. No changes to `main` are required to test.
+
+Example fixture: a University entry calls it “Ivory College”; Cornelius
+Obsidian’s enabled entry says he is its provost. Mention only the university in
+recent RP. Discovery can follow the institution alias and deliver Cornelius’s
+source text even when ST never activated his keyword entry. This is a retrieval
+opportunity, not a promise that the Director must cast him in every episode.
+
+### Scope and evidence
+
+Each enabled planning run uses the existing World Info book selection and fresh
+`loadWorldInfo`/discovery index, `wisearch` ranking and part-aware `wifetch`.
+It searches the seed and three latest visible RP messages, selects initial
+hits, then follows one level of literal references through entry titles/keys.
+Names, aliases, factions and institutions are supplied as source labels and
+exact passages. Co-mentions are explicitly **unverified reference leads**;
+only explicit source statements support a relationship. Negations and rumors
+must remain negated or uncertain. Source text is data, not model instructions.
+No synthetic relationship graph or asserted entity types are saved.
+
+Disabled entries are filtered from both search and reference expansion. This
+is independent of ST keyword activation: it does not run or alter ST’s activation
+engine. Eligibility uses the same selected-book scope as existing discovery,
+plus the enabled-entry filter; activation-time probability, timers and keyword
+conditions are not interpreted as facts. All enabled entries in that scope can
+be searched locally, even if absent from the current storyteller prompt.
+
+At most **4 exact excerpts**, each at most **1,200 source characters**, are added,
+within **8,000 total characters** including labels and provenance instructions.
+Excerpts carry original offsets, total length and COMPLETE/INCOMPLETE labels.
+Unserved/omitted results are declared. Search results and whole lorebooks stay
+local. The same evidence accompanies the existing draft/showrunner/watcher
+passes; there are **no extra model calls**. This is a character budget, not an
+exact tokenizer budget; existing RP/memory/world-rule context is unchanged.
+
+State is local to one planning run and discarded afterward. Saved lore changes
+are loaded on the next run. Chat changes during loading abort before any model
+call; existing post-generation chat guards still protect directive writes.
+World Info contents, activation settings and campaign records are never written
+by this feature. Director Edit, Editor, connection profiles, sessions, Campaign
+Ledger, ordinary lore tools and mobile layout/opening are not redesigned.
+
+### Verification and limits
+
+Regression coverage includes indirect Cornelius discovery, aliases/factions,
+disabled entries, negated membership, exact source offsets, changed books,
+chat switches, large books, late source parts, opt-out and all three existing
+Director passes. Browser tests exercise the real settings checkbox/save at
+mobile and desktop widths alongside the existing panel regressions.
+
+Selection is lexical and bounded, not semantic or exhaustive. Missing labels,
+ambiguous aliases and long prose can yield weak leads or miss relevant people.
+Excerpts are incomplete and the model can still misinterpret them; live model
+quality and the user’s actual Terranovia book require in-app evaluation. The
+fixture is synthetic, not a claim to have validated that private lorebook.
+
 ## v2.87.1 — Route legacy Author’s Note edits through the approval bridge
 
 Fixed the live-shaped APPEND failure where the correct combined text appeared
