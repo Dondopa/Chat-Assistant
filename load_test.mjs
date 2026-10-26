@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan, directorLoreContext, directorLoreMention, generateDirective };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -2894,6 +2894,85 @@ propose('PROPOSE_APPEND','cancel this');clickFresh('chatassist_an_cancel');await
 ok(anSaves===cancelWrites && ctx.chatMetadata.note_prompt===originalNote.note_prompt,'real Cancel listener remains non-mutating');
 SillyTavern.getContext=savedContextGetter;
 ctx.chatMetadata={};ctx.chat=[];
+
+console.log('== Phase 1: optional Director lore discovery ==');
+const dl=globalThis.__campaignTest;
+ok(CA.directorLoreDiscovery===false,'Director lore discovery defaults OFF for existing users');
+ctx.chatId='director-lore-A';ctx.chatMetadata={};ctx.chat=[{name:'Narrator',mes:'You arrive at the university gates.'}];
+CA.wiBooks='UniversityBook';CA.wiEnable=false;CA.directorTwoPass=true;CA.directorWatcherPass=true;CA.streaming=false;CA.profileId='gate-profile';
+const directorBook={entries:{
+ 0:{uid:0,comment:'University',key:['university','Ivory College'],content:'The university is also called Ivory College. It is a school, not a faction.'},
+ 1:{uid:1,comment:'Cornelius Obsidian',key:['Cornelius Obsidian','The Onyx Provost'],content:'Cornelius Obsidian serves as provost of Ivory College. He is NOT a member of the Black Anchor faction.'},
+ 2:{uid:2,comment:'Black Anchor',key:['Black Anchor'],content:'Black Anchor is a faction whose membership is secret. Rumors about Cornelius are unconfirmed.'},
+ 3:{uid:3,comment:'DISABLED_SPY',key:['university','Ivory College'],disable:true,content:'DISABLED_SPY leads the university.'},
+}};
+let dlLoads=0,dlWrites=0;ctx.loadWorldInfo=async book=>{dlLoads++;return book==='UniversityBook'?structuredClone(directorBook):{entries:{}};};
+ctx.saveWorldInfo=async()=>{dlWrites++;};
+const dlRef=()=>({id:ctx.chatId,md:ctx.chatMetadata});
+const sourceBefore=JSON.stringify(directorBook);
+ok(await dl.directorLoreContext(dlRef(),'')===''&&dlLoads===0,'disabled feature does not index lore or add context');
+CA.directorLoreDiscovery=true;
+let dlText=await dl.directorLoreContext(dlRef(),'');
+ok(dlText.includes('Cornelius Obsidian') && !ctx.chat[0].mes.includes('Cornelius'),'unactivated character discovered through university → Ivory College reference without player naming him');
+ok(dlText.includes('The Onyx Provost')&&dlText.includes('Black Anchor'),'names, aliases, institution and faction labels accompany actual source excerpts');
+ok(!dlText.includes('DISABLED_SPY'),'disabled entries excluded from discovery and reference expansion');
+ok(dlText.includes('NOT a member')&&dlText.includes('NOT proof')&&dlText.includes('relationship unverified'),'negation is preserved and reference leads are never declared canonical relationships');
+ctx.chat[0].mes=Array.from({length:40},(_,i)=>'unrelatedword'+i).join(' ')+' We arrive at the university.';
+const lateScene=await dl.directorLoreContext(dlRef(),'');
+ok(lateScene.includes('Cornelius Obsidian'),'known institution late in long RP is recognized before the search term cap');
+ctx.chat[0].mes='You arrive at the university gates.';
+ok(dlWrites===0&&JSON.stringify(directorBook)===sourceBefore,'discovery does not change lore content or activation flags');
+const dlRows=text=>text.split('\n').flatMap(line=>{try{const row=JSON.parse(line);return row.ref?[row]:[];}catch{return[];}});
+ok(dlRows(dlText).every(r=>directorBook.entries[r.ref.split('#').at(-1)].content.slice(r.start,r.end)===r.text),'every delivered excerpt equals its exact original source offsets');
+directorBook.entries[1].content='Cornelius Obsidian has resigned from Ivory College. UPDATED_LORE';
+dlText=await dl.directorLoreContext(dlRef(),'');
+ok(dlText.includes('UPDATED_LORE')&&!dlText.includes('serves as provost'),'each planning request reloads edited lore rather than reusing stale relationships');
+const renamedBook={entries:{0:{uid:0,comment:'Harbor',key:['harbor'],content:'HARBOR_ONLY: the harbor has a pier.'}}};
+ctx.chatId='director-lore-B';ctx.chatMetadata={};ctx.chat=[{name:'Narrator',mes:'At the harbor.'}];CA.wiBooks='HarborBook';ctx.loadWorldInfo=async()=>structuredClone(renamedBook);
+dlText=await dl.directorLoreContext(dlRef(),'');
+ok(dlText.includes('HARBOR_ONLY')&&!dlText.includes('Cornelius'),'new chat and book selection build isolated discovery state');
+const beforeSwitch=dlRef();ctx.loadWorldInfo=async()=>{ctx.chatId='director-lore-C';ctx.chatMetadata={};return structuredClone(directorBook);};
+ok(await dl.directorLoreContext(beforeSwitch,'university')===null,'chat switch during load cancels discovery instead of leaking results');
+ctx.chatId='director-lore-large';ctx.chatMetadata={};ctx.chat=[{name:'Narrator',mes:'At the university.'}];CA.wiBooks='UniversityBook';
+const largeBook=structuredClone(directorBook);
+largeBook.entries[1].content='Background. '.repeat(900)+'Cornelius Obsidian serves Ivory College. LATE_RELATION '+ 'More background. '.repeat(1000);
+for(let i=4;i<600;i++)largeBook.entries[i]={uid:i,comment:'Unrelated '+i,key:['unrelated'+i],content:'Remote desert description. '.repeat(100)};
+ctx.loadWorldInfo=async()=>structuredClone(largeBook);
+dlText=await dl.directorLoreContext(dlRef(),'');
+console.log(' measured Phase 1: book characters='+JSON.stringify(largeBook).length+', context characters='+dlText.length+', excerpts='+dlRows(dlText).length);
+ok(dlText.length<=8000&&dlRows(dlText).length<=4&&dlRows(dlText).every(r=>r.text.length<=1200),'large lorebook stays within 4 excerpts / 1200 each / 8000 total characters');
+ok(dlText.includes('LATE_RELATION')&&dlText.includes('EXCERPT')&&dlRows(dlText).some(r=>r.start>=6000),'relation beyond first fetch part uses existing part fetch and is explicitly incomplete');
+ok(!dlText.includes('Remote desert description.'),'irrelevant book bulk is not sent to the Director');
+const crowdedBook=structuredClone(directorBook);
+for(let i=4;i<30;i++)crowdedBook.entries[i]={uid:i,comment:'Professor '+i,key:['Professor '+i],content:'Professor '+i+' works at the university. '+ 'Ordinary source prose. '.repeat(70)};
+ctx.loadWorldInfo=async()=>structuredClone(crowdedBook);
+const crowdedText=await dl.directorLoreContext(dlRef(),'');
+ok(dlRows(crowdedText).length<=4&&crowdedText.length<=8000,'many connected characters cannot exceed the selection/count budget');
+crowdedBook.entries[0].comment='University '+ 'X'.repeat(9000);
+ctx.loadWorldInfo=async()=>structuredClone(crowdedBook);
+const metadataText=await dl.directorLoreContext(dlRef(),'');
+ok(metadataText.length<=8000&&!metadataText.includes('X'.repeat(1000)),'oversized source labels cannot defeat the total payload budget');
+ctx.chat=[];
+ok((await dl.directorLoreContext(dlRef(),'')).includes('No scene search terms'),'empty scene does not select arbitrary lore');
+ctx.chat=[{name:'Narrator',mes:'At the university.'}];
+ok(dl.directorLoreMention('Artisan','Art')===-1&&dl.directorLoreMention('The A+B Guild exists.','A+B Guild')===4,'alias references use literal whole names, not substring or regex matches');
+// Drive all existing planning passes. No separate model/research loop is added.
+ctx.loadWorldInfo=async()=>structuredClone(directorBook);ctx.chatMetadata={};const directorCalls=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m)=>{directorCalls.push(structuredClone(m));return 'Intensity: standard\n1. EPISODE PREMISE — a meeting at the university.';};
+await dl.generateDirective('new',false,'');
+ok(directorCalls.length===3&&directorCalls.every(m=>m.some(x=>x.content.includes('DIRECTOR LORE DISCOVERY')&&x.content.includes('Cornelius Obsidian'))),'draft, showrunner and watcher receive the same bounded lore evidence without extra model calls');
+ok(!!ctx.chatMetadata.continuityCopilot?.director?.text,'existing Director still stores its final directive');
+CA.directorLoreDiscovery=false;directorCalls.length=0;await dl.generateDirective('next',false,'');
+ok(directorCalls.length===3&&directorCalls.every(m=>m.every(x=>!x.content.includes('DIRECTOR LORE DISCOVERY'))),'turning feature off restores baseline planning prompts');
+CA.directorLoreDiscovery=true;directorCalls.length=0;const beforeDirective=ctx.chatMetadata;
+ctx.loadWorldInfo=async()=>{ctx.chatId='switched-during-plan';ctx.chatMetadata={};return structuredClone(directorBook);};
+await dl.generateDirective('new',false,'');
+ok(directorCalls.length===0&&!ctx.chatMetadata.continuityCopilot?.director,'switch while Director indexes lore makes no model call or wrong-chat directive');
+ctx.chatId='late-switch-start';ctx.chatMetadata={};directorCalls.length=0;let lateLoads=0;
+ctx.loadWorldInfo=async()=>{lateLoads++;if(lateLoads===2){ctx.chatId='late-switch-destination';ctx.chatMetadata={};}return structuredClone(directorBook);};
+await dl.generateDirective('new',false,'');
+ok(lateLoads===2&&directorCalls.length===0,'chat switch during existing world-rules load is caught before sending discovered lore');
+CA.directorLoreDiscovery=false;ctx.chatMetadata={};ctx.chat=[];
 
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');

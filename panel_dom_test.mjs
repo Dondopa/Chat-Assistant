@@ -23,6 +23,15 @@ try {
   await page.evaluate(()=>ready.forEach(fn=>fn()));
   assert.equal(await page.locator('#chatassist_panel #chatassist_campaign > summary').count(),1,'APP_READY must build the row in the real panel');
   await page.locator('#chatassist_menu_item').click();
+  await page.locator('#chatassist_gear').click();
+  assert.equal(await page.locator('#chatassist_dir_lore').isChecked(),false,'experimental discovery is OFF by default in real settings');
+  await page.locator('#chatassist_dir_lore').check();
+  await page.locator('#chatassist_saveset').click();
+  assert.equal(await page.evaluate(()=>testContext.extensionSettings.continuityCopilot.directorLoreDiscovery),true,'real settings save enables discovery');
+  await page.locator('#chatassist_dir_lore').uncheck();
+  await page.locator('#chatassist_saveset').click();
+  assert.equal(await page.evaluate(()=>testContext.extensionSettings.continuityCopilot.directorLoreDiscovery),false,'real settings save disables discovery again');
+  await page.locator('#chatassist_gear').click();
   const geometry=await page.locator('#chatassist_campaign > summary').evaluate(summary=>{
    const r=summary.getBoundingClientRect(), d=summary.parentElement.getBoundingClientRect(), p=summary.closest('#chatassist_panel').getBoundingClientRect();
    const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
