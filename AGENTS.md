@@ -46,6 +46,8 @@ There is no other gate and no partial credit.
 - **Undo is refusal-first and node-scoped**: backups and drift fingerprints are taken at the edited node, never at the root key.
 - **Model-agnostic:** never hardcode a model identity or design around one model's quirks.
 
+- **Attachments are transient, untrusted reference data.** Never add raw documents to RP injections, metadata, worldbooks or ripple canon scans. Only the assistant request loop receives the metadata catalog and explicitly fetched parts. Every part labels exact text coverage, and PDF text-only limitations remain explicit even when all extracted text was served. Clear on CHAT_CHANGED and invalidate in-flight uploads by epoch. Keep attachment budgets separate from worldbook retrieval. The only on-demand imports are SillyTavern’s own bundled PDF.js modules; no CDN or build dependency.
+
 ## Harness limits worth knowing
 
 `load_test.mjs` drives the module against a mocked SillyTavern, but **the proposal-card DOM is never built** — `#cc_edits` does not exist, so any assertion reading card text passes vacuously and proves nothing. Assert on the **notes** the extension emits instead (`auto-skipped`, `Anchor check:`, `proposed edits below`), which are real observable behaviour. The same applies to `cc_applyall` / `cc_dismissall`: `dismissPending()` is a no-op in this harness.

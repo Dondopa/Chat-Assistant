@@ -4,6 +4,50 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.88.0 — Read attachments in the assistant panel
+
+Use **Attach file** beside the composer to load TXT, MD, JSON or PDF, then ask
+about it in the assistant. **Remove attachments** clears the temporary files.
+Attachments stay in browser memory for the current chat, across assistant
+sessions; changing chats or reloading clears them. Reattach after a reload.
+Only requested excerpts are sent to your configured assistant model. They are
+never inserted into RP messages, extension injections, worldbooks or saved
+metadata. The assistant's answers still follow normal conversation history.
+
+Text must be UTF-8; Markdown stays literal text and JSON is validated without
+rewriting its values. Invalid, empty, binary or oversized text is rejected with
+an error. Up to five files, each at most 10 MiB and 1,000,000 extracted characters,
+can be held in memory. PDF uses SillyTavern's bundled PDF.js modules, loaded only
+on demand, with evaluation disabled and parser cleanup on success or failure.
+It reads at most 200 pages and stops at the extracted-character limit. PDF
+coverage always says **INCOMPLETE visual coverage**: this is text extraction,
+not OCR, and images, layout and scanned content may be missing. Scanned files
+without readable text are rejected. If the host lacks PDF.js, export to TXT.
+
+The model initially receives only a filename/size/part catalog. Separate
+`docsearch` and `docfetch` tools provide lexical chunk discovery (including
+paginated browsing) and exact parts, without changing `wisearch`/`wifetch`.
+Parts contain at most 6,000 characters; a request has a shared 24,000-character
+attachment text budget and at most four refs per fetch. Every returned part
+includes its character count, position, total size and COMPLETE/INCOMPLETE
+coverage. Missing refs, over-cap refs and exhausted budgets are named explicitly.
+Search results are marked UNREAD and contain no text excerpts. The bounded
+assistant loop stops repeated retrieval with an incomplete-analysis message.
+For larger documents, ask focused questions or continue with specific parts;
+a single response cannot claim to have audited unread portions.
+
+Files are untrusted, read-only reference material, not automatically accepted
+story facts. Filenames render as text, and contents are encoded as data in model
+requests. The original file is never modified. Uploads finishing after a chat
+change or removal are discarded. Send waits for parsing; attachment removal
+waits for an active assistant run to stop.
+
+Validation: `node load_test.mjs` includes parsing, coverage, budget, retrieval,
+real upload/Send/removal handlers, persistence isolation, PDF resource cleanup
+and chat-change races. Optional `attachment_dom_test.mjs` checks real browser
+controls and inert rendering at mobile and desktop widths; set `ST_PUBLIC_DIR`
+to a SillyTavern `public` directory to include actual bundled PDF.js extraction.
+
 ## v2.87.1 — Route legacy Author’s Note edits through the approval bridge
 
 Fixed the live-shaped APPEND failure where the correct combined text appeared
