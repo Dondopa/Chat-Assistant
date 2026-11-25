@@ -4,6 +4,75 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.90.0-preview.2 — Canon validation and bounded recovery
+
+This update stays on `feature/canon-director`. It fixes the live
+`Invalid causal classification. (8 calls)` failure path: preview.1's example
+omitted required divergence fields, exact enum spelling was brittle, and
+retrieval could spend the final call before validation had repair capacity.
+
+**Run diagnostics** is an expandable section in the Canon Director window.
+It identifies rejected record indexes, kinds, subjects/facets, fields, received
+values, accepted values and missing-versus-invalid status. Diagnostics use inert
+text, redact credential-shaped values, and never include connection/profile
+objects or raw provider errors. They clear on a new run or chat/window close and
+are hidden in Player view. Values are bounded; source inspection remains the
+place to read evidence. An incomplete accepted run retains its rejected-record
+report in `campaignLedger.narrative.lastRun`.
+
+The prompt now includes complete ordinary, canon-compatible improvisation,
+pending-divergence and uncertain examples, plus a JSON schema generated from
+the validator enums. Capitalization, surrounding whitespace, and spaces/hyphens
+versus underscores normalize only to an exact existing enum. Unknown concepts
+remain invalid. Evidence, baseline, provenance and completed-consequence checks
+still run after normalization.
+
+Calls are bounded by phase: **6 retrieval/analysis attempts, 2 reserved synthesis
+attempts, and 2 repair attempts**; at most **10 transport attempts**. A final
+answer returned early moves directly to validation. Tools stop once synthesis
+or repair begins. Repairs receive precise diagnostics and only the affected
+candidate records; valid candidates are frozen. Previously fetched evidence
+stays in the conversation, so successful retrieval is not rerun for repair.
+Empty/malformed envelopes have bounded recovery; truncated generations are not
+accepted as complete output. Call counts and phase counts remain visible.
+
+On native OpenAI/Azure chat-completion connection profiles, synthesis and repair
+request SillyTavern's `json_schema` override. A recognizable unsupported-schema
+error switches that run to prompt-only output within the same phase budget.
+Unknown/custom/text-completion providers and legacy hosts keep prompt-based JSON
+with the same deterministic validator. This is capability-limited compatibility,
+not a guarantee that every model or reverse proxy supports strict schemas.
+
+If repairs are exhausted, independently valid records can form an explicitly
+**INCOMPLETE** review proposal. Rejected records, transitive dependents and cues
+that might summarize unresolved claims are withheld. All proposed retirements
+are withheld. `dependsOn` optionally lists 1-based candidate indexes; it is never
+a source citation, and every record still needs independently retrieved source
+references. Invalid/cyclic dependencies fail closed. Approved candidate edges
+become persistent record dependencies so later retirement invalidates their
+conclusions. Repeated identical accepted records reuse their IDs.
+
+Partial proposals **never save automatically**. The existing Accept control
+still checks source freshness, chat/state snapshots and native save/reload
+verification. Partial acceptance leaves coverage/progress unchanged and keeps
+previously accepted records. Review the rejected-record report and run a focused
+follow-up before creating a cue. Unresolvable runs with no valid records produce
+no proposal. No Campaign Ledger audit behavior, automatic Director/Editor mode,
+World Info activation, Document Library storage or mobile-opening logic changes.
+
+Regression coverage includes imperfect causal labels and missing fields,
+multiple rejected records, repair at the final permitted call, evidence reuse,
+partial approval, dependent rejection/retirement, source drift, provider schema
+fallback, phase budgets and real Initialize/diagnostics/Accept UI controls.
+The release gate passed **877 tests (zero failures)**. Canon Director browser
+checks passed at **360, 412 and 1280 pixels**, alongside the existing panel,
+mobile-layout and Library browser suites. **16 gate mutations and 2 browser
+mutations** each failed at the intended protection.
+
+Tests use recorded RP and mocked model/provider responses; live provider behavior
+and semantic judgment in the user's running campaign still require gameplay
+validation. No live-model calls or credentials are required by the harness.
+
 ## v2.90.0-preview.1 — Manual Canon Director and narrative state
 
 Development branch: `feature/canon-director`, based on
@@ -119,11 +188,12 @@ original messages must still be fetched for a new evidence claim.
 
 Each manual operation has separate limits: 24,000 RP characters, 24,000 Library
 serialized response characters, 48,000 lore characters, 18,000 state characters,
-6,000 index characters, and eight model transport attempts. Canon uses complete
-non-streaming JSON with one bounded malformed-response correction. Finish/stop
+6,000 index characters, and phase-bounded model transport attempts (see preview.2 above). Canon uses
+complete non-streaming JSON with bounded structured-output repair. Finish/stop
 reasons, empty responses and exhausted budgets are explicit failures, not
 successful partial updates. Other Chat Assistant workflows keep their streaming
-behavior. Stop and chat/state/source changes discard pending results.
+behavior. Stop and chat/state/source changes discard pending results. Independently valid
+partial proposals are explicitly marked and still require review.
 
 The initial context includes a bounded changed/new and recent RP sample, active
 critical state, and a bounded selection of operation-relevant stored threads or
