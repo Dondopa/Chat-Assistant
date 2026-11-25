@@ -4,6 +4,111 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.89.0-preview.1 — Persistent Document Library (feature branch)
+
+This preview is developed on `feature/persistent-document-library`; it does not
+change `main`. Open **Library** beside the assistant composer. Paste text and
+enter a title, or choose a UTF-8 `.txt`/`.md` file, then **Save as new document**.
+Files are staged for review before saving. The complete original file text,
+including BOM and CRLF line endings, is preserved unless you edit the staged
+text. Pasted text is saved exactly as supplied by the browser editor.
+
+The shared library belongs to the current SillyTavern user/server. **Check a
+row to select it for the current RP chat.** New chats have no selection; assistant
+sessions within one chat share its selection. Importing a document does not
+select it. Select separately in another chat. The Library shows title, revision,
+size, character count, import date and role. Preview displays the entire source
+as inert text. **Edit details / replace** loads metadata; **Save details** keeps
+the body, while **Replace text** requires the complete replacement and confirmation.
+Delete requires confirmation and affects every chat. **Clear chat selection**
+also removes references to documents that have since been deleted.
+
+Optional description, tags and the roles *reference*, *author guidance* and
+*ideas* organize documents; none makes a document canonical or authorizes an
+instruction inside it. No raw document text is automatically injected. Ask the
+assistant, for example, “Search my selected references for university factions,
+fetch the relevant passages, and cite the document revision and location.”
+The model can list selected metadata (`liblist`), perform local lexical search
+(`libsearch`), and fetch revision-qualified parts (`libfetch`). Search results
+are **UNREAD** references, not evidence until fetched. This release has no
+semantic ranking, embeddings or automatic retrieval by the Director.
+
+Limits: 200 documents per library, 10 MiB per UTF-8 document, 20 selected per
+chat. List/search pages contain at most eight rows; fetch handles at most four
+parts, each at most 6,000 UTF-16 characters. All three tools share a 24,000
+serialized-response-character budget per assistant request, separate from lore
+and temporary attachment budgets. JSON escaping/metadata count toward this
+budget. References not served and incomplete coverage are reported explicitly.
+Passages include title, revision, original character offsets and starting line.
+Long documents remain fully stored and previewable; retrieve successive parts
+in focused requests rather than expecting an entire novel in one answer.
+Lexical search has a small overlap at part boundaries; it is not semantic search.
+
+### Storage and isolation
+
+The library uses SillyTavern's native authenticated `/api/files/upload`,
+`/api/files/delete` and `/user/files/` mechanism, also used by the
+[Data Bank attachment implementation](https://github.com/SillyTavern/SillyTavern/blob/staging/public/scripts/chats.js).
+There is no custom server, extra package or automatic Data Bank/World Info
+activation. The server's per-user files contain `ca-library-catalog.json` and
+immutable, revisioned `ca-library-*.txt` bodies. Back up both together with your
+SillyTavern user data. Chat metadata holds selection IDs, never raw document
+bodies. Normal assistant answers can contain quoted excerpts in saved history.
+
+An upload is read back and checked before the catalog changes. Body reads verify
+length and SHA-256; metadata-only edits and replacements both change the public
+revision. Replacements/deletions retire old references and abort stale retrieval.
+Old bodies are removed only after the new catalog is verified. A failed or
+interrupted write may leave an unreferenced staged body; it is retained rather
+than risking deletion of valid data. If a connection fails after a write, refresh
+the Library to resolve the outcome before retrying.
+
+Same-browser writes are serialized (Web Locks where supported), and detected
+catalog-version conflicts are rejected. The native API has **no compare-and-swap
+transaction**: avoid simultaneous library edits from different devices. This
+preview does not claim to solve that cross-device race. HTTP LAN hosts without
+SubtleCrypto use an equivalent local SHA-256 implementation; no remote hashing
+service receives documents.
+
+Only selected documents can be read by model tools. Selection/chat/revision
+checks run around asynchronous retrieval and model calls. Answers derived from
+library reads, including follow-up answers using that history, carry revision
+references; deselecting, deleting or replacing a source excludes those turns
+from subsequent assistant context. They remain visible in session history.
+This cannot erase data already sent to the user's configured model provider.
+The model has no library import/edit/delete/selection tool. Document contents
+are always labelled untrusted reference data and are never executed as HTML.
+
+Persistent imports deliberately exclude PDF, DOCX, URLs and OCR. Existing
+**Attach file** remains the separate temporary attachment feature. Automatic
+Director/Author's Note integration, canon extraction, divergence tracking,
+world simulation and proactive supervision remain deferred. Existing lore
+retrieval, Campaign Ledger and mobile panel layout are preserved.
+
+### Validation and trying the preview
+
+Run the required `node load_test.mjs`. It covers server-file preservation,
+selected-only retrieval, bounded complete-part reconstruction, revisions,
+failed writes, stale edits, malformed requests, concurrent-change rejection,
+chat switches during reads, changes during generation and derived-history
+isolation alongside existing regressions. `library_dom_test.mjs` clicks the
+actual Library controls after APP_READY in Chromium at mobile and desktop
+widths. Its native-API-shaped fixture writes files to disk, then reloads the
+browser and restarts its server to test persistence. It also catches textarea
+line-ending normalization, failed imports, deletion cancellation and inert
+preview rendering. Existing panel, mobile-layout and attachment browser checks
+remain applicable. Browser tests require Playwright and can use
+`CHROME_PATH=/usr/bin/google-chrome`.
+
+These fixtures are not a live SillyTavern installation or a physical Android
+phone. Before wider use, select the feature branch in a test installation,
+reload SillyTavern, import a long TXT or MD, select it, ask for a passage near its
+end, then restart SillyTavern. Verify the preview and selection persist. Switch
+to a new chat and verify nothing is selected; replace the original document and
+verify old references are rejected. Confirm paste/file picker and scrolling on
+your phone. Keep automatic document injection off: this version supplies no
+setting or background path that enables it.
+
 ## v2.88.0 — Read attachments in the assistant panel
 
 Use **Attach file** beside the composer to load TXT, MD, JSON or PDF, then ask
