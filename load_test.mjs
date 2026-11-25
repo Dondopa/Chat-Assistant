@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { canonStore, canonAnalyze, canonParse, canonRepair, canonSchema, callLLM, canonEnum, CANON_CAUSES, canonSafe, getCanonDiagnostics:()=>canonDiagnostics, canonProofValid, canonValid, canonManagedNote, canonProposeCue, canonAccept, canonPersist, canonChatFetch, canonTool, canonEnvironment, canonStateRead, canonFingerprint, canonAssert, getCanonPending:()=>canonPending, librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { canonStore, canonAnalyze, canonParse, canonRepair, canonSchema, callLLM, callLoreLLM, sysPrompt, canonProviderError, canonProviderText, canonOutputBudget, canonRequestMetrics, canonConnectionCapacity, raceTransport, canonEnum, CANON_CAUSES, canonSafe, getCanonDiagnostics:()=>canonDiagnostics, canonProofValid, canonValid, canonManagedNote, canonProposeCue, canonAccept, canonPersist, canonChatFetch, canonTool, canonEnvironment, canonStateRead, canonFingerprint, canonAssert, getCanonPending:()=>canonPending, librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -3348,6 +3348,95 @@ let stopCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{stopCa
 ok(stopCalls===1&&!cd.getCanonPending(),'Stop survives tool boundaries and prevents another Canon Director call');
 ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chatId='switch-during-model';ctx.chatMetadata={note_prompt:''};return JSON.stringify(finalValue);};await cd.canonAnalyze('stage');
 ok(!cd.getCanonPending()&&!ctx.chatMetadata.continuityCopilot,'chat switch during generation discards narrative proposal');
+
+console.log('== equivalent-input pipeline probe ==');
+ctx.chatId='pipeline-comparison';ctx.chatMetadata={note_prompt:''};ctx.chat=structuredClone(gameplay);CA.wiBooks='';CA.streaming=false;CA.maxTokens=2048;CA.profileId='gate-profile';
+cd.canonStore().config.continuity='Comparison fixture';
+const comparisonDoc=await cd.libraryCommit({...info('Pipeline comparison reference'),text:'BOUND_REFERENCE '.repeat(500)});await cd.librarySelect(comparisonDoc.id,true,cRef());
+const comparedRequests=[];let comparisonLimit=0;
+const inputChars=m=>m.reduce((n,x)=>n+String(x.content||'').length,0);
+ctx.ConnectionManagerRequestService.sendRequest=async(pid,m,maxTokens,options,payload)=>{
+ const chars=inputChars(m);if(!comparisonLimit)comparisonLimit=Math.ceil(chars/4)+8192+100;
+ comparedRequests.push({pid,m:structuredClone(m),maxTokens,chars,systemChars:m.filter(x=>x.role==='system').reduce((n,x)=>n+x.content.length,0),stream:!!options.stream,raw:options.extractData===false,schema:!!payload?.json_schema});
+ if(Math.ceil(chars/4)+maxTokens>comparisonLimit)throw new Error('API request failed',{cause:Object.assign(new Error('maximum context length exceeded: input plus max_tokens exceeds context window'),{status:400})});
+ return JSON.stringify(comparedRequests.length===1?{tool:'libfetch',value:[comparisonDoc.id+':'+comparisonDoc.revision+'@1']}:{records:[],retire:[],summary:'Bounded reference consulted.',cueAssessment:''});
+};
+await cd.canonAnalyze('initialize');const comparedCanonPending=!!cd.getCanonPending();
+const ordinaryRequests=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(pid,m,maxTokens,options,payload)=>{ordinaryRequests.push({pid,maxTokens,chars:inputChars(m),stream:!!options.stream,raw:options.extractData===false,schema:!!payload?.json_schema});if(Math.ceil(inputChars(m)/4)+maxTokens>comparisonLimit)throw new Error('context limit exceeded');return 'Equivalent-input ordinary analysis succeeds.';};
+for(const request of comparedRequests)await cd.callLoreLLM(request.m);
+
+ok(comparedCanonPending&&comparedRequests.length===2&&comparedRequests.every(r=>r.maxTokens===2048),'equivalent-input reproduction: Canon respects configured output limit and succeeds after retrieval');
+ok(ordinaryRequests.every((r,i)=>r.maxTokens===comparedRequests[i].maxTokens&&r.chars===comparedRequests[i].chars&&r.pid===comparedRequests[i].pid&&r.stream===comparedRequests[i].stream&&r.raw===comparedRequests[i].raw&&r.schema===comparedRequests[i].schema),'ordinary and Canon use the same profile, payload mode, roles/text and configured output budget for equivalent inputs');
+ok(comparedRequests[1].chars>comparedRequests[0].chars&&comparedRequests[1].m.at(-1).content.includes('[LIBRARY DATA'),'second generation receives the actual bounded library response rather than whole books');
+console.log('PIPELINE_SIZES '+JSON.stringify({canon:comparedRequests.map(({m,...rest})=>rest),ordinary:ordinaryRequests,ordinaryBaseSystemChars:cd.sysPrompt().length}));
+
+console.log('== preview.3 model-neutral budgets and safe execution diagnostics ==');
+const finalEmpty={records:[],retire:[],summary:'Complete bounded analysis.',cueAssessment:''};
+const requestDetails=()=>cd.getCanonDiagnostics().map(d=>d.request).filter(Boolean);
+CA.maxTokens=6000;let phaseRequests=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m,t,_o,payload)=>{phaseRequests.push({t,m:structuredClone(m),schema:!!payload?.json_schema});return JSON.stringify(phaseRequests.length===1?{ready:true}:phaseRequests.length===2?{...runtimeFinal,records:[runtimeBad]}:{repairs:[{index:1,record:runtimeFixed}]});};
+await cd.canonAnalyze('initialize');
+ok(phaseRequests.length===3&&phaseRequests[0].t===2048&&phaseRequests[1].t===6000&&phaseRequests[2].t===6000&&cd.getCanonPending()?.records.length===1,'retrieval has a small output cap; synthesis and repair retain the full configured answer budget');
+CA.maxTokens=700;phaseRequests=[];ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,t)=>{phaseRequests.push(t);return JSON.stringify(phaseRequests.length===1?{ready:true}:finalEmpty);};await cd.canonAnalyze('initialize');
+ok(phaseRequests.join(',')==='700,700','small configured model output limits are respected in both retrieval and synthesis');
+CA.maxTokens=6000;phaseRequests=[];ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,t)=>{phaseRequests.push(t);return phaseRequests.length===1?{choices:[{message:{content:'{"records":['},finish_reason:'length'}]}:JSON.stringify(finalEmpty);};await cd.canonAnalyze('initialize');
+ok(phaseRequests.join(',')==='2048,6000'&&cd.getCanonPending()?.records.length===0&&cd.getCanonPending().counts.synthesis===1,'truncated retrieval output is discarded and uses reserved synthesis, not extra retries or a partial record');
+// Selected profile context is isolated from the active RP connection settings.
+ctx.mainApi='openai';ctx.chatCompletionSettings={openai_max_context:256};ctx.ConnectionManagerRequestService.getProfile=()=>({preset:'selected-fixture'});ctx.ConnectionManagerRequestService.validateProfile=()=>({selected:'openai',source:'custom'});
+let presetLimit=100000;ctx.getPresetManager=api=>({getCompletionPresetByName:name=>({openai_max_context:presetLimit,openai_max_tokens:300})});
+ok(cd.canonConnectionCapacity().contextLimit===100000,'profile context uses the selected profile preset, not unrelated active RP limits');
+phaseRequests=[];ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,t)=>{phaseRequests.push(t);return JSON.stringify(phaseRequests.length===1?{ready:true}:finalEmpty);};await cd.canonAnalyze('initialize');
+ok(phaseRequests.join(',')==='2048,6000','RP preset generation length is not misrepresented as the assistant model output limit');
+ctx.ConnectionManagerRequestService.validateProfile=()=>({selected:'openai',source:'openai'});let schemaFailureCalls=0;
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{schemaFailureCalls++;if(schemaFailureCalls===1)return JSON.stringify({ready:true});throw Object.assign(new Error('Provider temporarily unavailable'),{status:503});};await cd.canonAnalyze('initialize');
+let schemaFailure=requestDetails().find(d=>d.httpStatus===503);
+ok(schemaFailureCalls===2&&schemaFailure?.structuredOutputRequested===true&&schemaFailure.schemaCharacters>0&&schemaFailure.phase==='synthesis'&&schemaFailure.callNumber===2,'failed structured synthesis reports the requested schema and exact phase/call');
+ctx.ConnectionManagerRequestService.validateProfile=()=>({selected:'openai',source:'custom'});
+presetLimit=5000;let reservedBlocked=false;const reserveRun={phase:'retrieval',calls:0,counts:{retrieval:0,synthesis:0,repair:0},schema:null};
+try{cd.canonOutputBudget([{role:'user',content:'x'.repeat(4000)}],reserveRun);}catch(e){reservedBlocked=e.execution?.failureStage==='preflight';}
+ok(reservedBlocked&&reserveRun.request.reservedSynthesisTokens===6000&&reserveRun.request.requestSent===false,'context preflight reserves full synthesis capacity even when the smaller retrieval output would fit');
+presetLimit=1000;let blockedRequests=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{blockedRequests++;return JSON.stringify(finalEmpty);};const stateBeforeCapacity=JSON.stringify(cd.canonStore());await cd.canonAnalyze('initialize');
+let d=requestDetails().find(d=>d.failureStage==='preflight');
+ok(blockedRequests===0&&!cd.getCanonPending()&&d?.contextLimit===1000&&d.reservedSynthesisTokens===6000&&d.estimatedAvailableContextTokens===0&&JSON.stringify(cd.canonStore())===stateBeforeCapacity,'known context overflow fails before transport without shrinking synthesis, truncating evidence or changing state');
+ctx.getPresetManager=()=>({getCompletionPresetByName:()=>undefined});ok(cd.canonConnectionCapacity().contextLimit===null,'missing selected preset never borrows a different connection context limit');
+delete ctx.getPresetManager;delete ctx.ConnectionManagerRequestService.getProfile;delete ctx.ConnectionManagerRequestService.validateProfile;delete ctx.mainApi;delete ctx.chatCompletionSettings;
+// Full second-call reproduction with actionable nested provider failure; no auth/body leakage.
+let failureCalls=0;const fakeAuth='private-example-credential';
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{failureCalls++;if(failureCalls===1)return JSON.stringify({tool:'libfetch',value:[comparisonDoc.id+':'+comparisonDoc.revision+'@1']});const cause=Object.assign(new Error('Context length exceeded; "api_key":"'+fakeAuth+'" Authorization: Bearer FAKEAUTH https://user:PASS@example.test/?token=QUERYSECRET'),{status:400,headers:{Authorization:'UNEXPOSED_HEADER'},request:{body:'UNEXPOSED_BODY'}});throw new Error('API request failed',{cause});};
+await cd.canonAnalyze('initialize');d=requestDetails().find(d=>d.category==='context_limit');const safeRun=JSON.stringify(cd.getCanonDiagnostics());
+ok(failureCalls===2&&!cd.getCanonPending()&&d?.httpStatus===400&&d.failureStage==='transport'&&d.phase==='retrieval'&&d.callNumber===2,'nested provider failure preserves HTTP status, category, stage and actual failed call without retry');
+ok(d?.requestedMaxOutputTokens===2048&&d.configuredMaxOutputTokens===6000&&d.estimatedInputTokens===Math.ceil((d.inputCharacters+d.schemaCharacters)/4)+4*d.messageCount&&d.systemPromptCharacters>0&&d.inputCharacters>d.systemPromptCharacters&&d.retrievedContextCharacters.library>6000&&d.structuredOutputRequested===false&&d.modelOutputLimit===null,'failure reports measured request/context sizes, approximate tokens, output budgets and unknown limits honestly');
+ok(![fakeAuth,'FAKEAUTH','PASS','QUERYSECRET','UNEXPOSED_HEADER','UNEXPOSED_BODY'].some(secret=>safeRun.includes(secret)),'nested diagnostics redact auth values and URLs without serializing headers or request bodies');
+for(const [error,category,status] of [
+ [Object.assign(new Error('Too many requests'),{statusCode:429}),'rate_limit_or_quota',429],
+ [new Error('HTTP 401 Unauthorized'),'authentication',401],
+ [Object.assign(new Error('Provider temporarily unavailable'),{response:{status:503,headers:{key:'SECRET'}}}),'provider_server_error',503],
+ [new Error('max_tokens exceeds maximum permitted output'),'output_limit',null],
+ [new TypeError('Failed to fetch'),'network',null],
+ [Object.assign(new Error('Request deadline'),{name:'TimeoutError',code:'ETIMEDOUT'}),'timeout',null],
+ [new Error('Unsupported parameter response_format'),'unsupported_parameter',null],
+ [new Error('API request failed'),'unknown',null],
+ ]){const summary=cd.canonProviderError(error);ok(summary.category===category&&summary.httpStatus===status,'sanitized provider categorization: '+category);}
+const axiosLike=cd.canonProviderError({message:'Request rejected',response:{status:400,data:{error:{message:'Context window exceeded',api_key:'UNEXPOSED_KEY'},request:'UNEXPOSED_BODY'},headers:{Authorization:'UNEXPOSED_AUTH'}}});
+ok(axiosLike.httpStatus===400&&axiosLike.category==='context_limit'&&!JSON.stringify(axiosLike).includes('UNEXPOSED'),'structured transport error reads only whitelisted response error fields');
+let providerResponseCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{providerResponseCalls++;return {error:{message:'Rate limit reached',status:429,headers:{Authorization:'NEVER_SHOW'}}};};await cd.canonAnalyze('initialize');d=requestDetails().find(d=>d.httpStatus===429);
+ok(providerResponseCalls===1&&d?.failureStage==='provider_generation'&&d.category==='rate_limit_or_quota','returned provider error is distinct from transport failure and is not blindly retried');
+let parseCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{parseCalls++;return 'not JSON';};await cd.canonAnalyze('initialize');
+ok(parseCalls===4&&requestDetails().some(d=>d.failureStage==='response_parsing'&&d.callNumber===1),'malformed response is identified as response parsing within existing bounded recovery');
+ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({...runtimeFinal,records:[runtimeBad]});await cd.canonAnalyze('initialize');
+ok(requestDetails().some(d=>d.failureStage==='validation'),'record-schema failure stays distinct from parsing and provider failure');
+// Timeout settles before abort, retaining an actionable cause and releasing the run lock.
+CA.llmTimeoutSec=1;let timeoutCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{timeoutCalls++;return new Promise(()=>{});};await cd.canonAnalyze('initialize');d=requestDetails().find(d=>d.category==='timeout');
+ok(timeoutCalls===1&&d?.failureStage==='transport'&&d.timeoutSeconds===1&&d.providerMessage.includes('no response after')&&!cd.getCanonPending(),'watchdog reports timeout instead of synchronous abort masking it as stopped');
+ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify(finalEmpty);await cd.canonAnalyze('initialize');ok(!!cd.getCanonPending(),'a successful run can start immediately after the timeout');CA.llmTimeoutSec=60;
+// The current-connection path uses the same phase budgets and diagnostics without schema options.
+const savedProfile=CA.profileId;CA.profileId='';let fallbackRequests=[];
+ctx.generateRawData=async options=>{fallbackRequests.push(options);return JSON.stringify(fallbackRequests.length===1?{ready:true}:finalEmpty);};await cd.canonAnalyze('initialize');
+ok(fallbackRequests.length===2&&fallbackRequests[0].responseLength===2048&&fallbackRequests[1].responseLength===6000&&!fallbackRequests.some(r=>r.jsonSchema),'current-connection backend respects phase budgets without introducing unsupported provider parameters');
+ctx.generateRawData=async()=>{throw Object.assign(new Error('Backend rejected max_tokens'),{status:400});};await cd.canonAnalyze('initialize');
+ok(requestDetails().some(d=>d.backend==='current connection'&&d.httpStatus===400&&d.failureStage==='transport'),'current-connection failure reports the correct backend and status');
+delete ctx.generateRawData;CA.profileId=savedProfile;
 
 globalThis.fetch=oldFetch;ctx.chatMetadata={};ctx.chat=[];
 
