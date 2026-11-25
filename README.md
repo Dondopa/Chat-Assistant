@@ -4,6 +4,158 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.90.0-preview.1 — Manual Canon Director and narrative state
+
+Development branch: `feature/canon-director`, based on
+`feature/persistent-document-library`. Stable `main` and the Library branch
+are preserved. Open **Canon Director** beside **Library** in the composer.
+Nothing runs on a timer, scene transition or ordinary RP generation.
+
+1. Select reference documents in **Library** for this chat.
+2. In Canon Director, open **Continuity and source precedence**. Name the chosen
+   continuity, identify player-created characters, and assign each selected
+   source an authority and precedence (lower number first). Library role labels
+   alone never make a document canonical. Save configuration.
+3. Uncheck **Player view** to open the director workspace. Choose **Initialize
+   canon**, **Analyze narrative stage**, **Review progression**, **Check canonical
+   integrity**, **Review divergences**, **Review parallel storylines**, or
+   **Generate / update Director Cue**.
+4. Review the analysis, each proposed record and every proposed retirement.
+   **Inspect source** displays the original referenced passage as inert text,
+   with its message ID or document revision/part. **Accept narrative changes**
+   saves the batch; **Discard proposal** leaves state unchanged. New extractions
+   are not silently accepted, even if their JSON and references validate.
+5. For a cue, retain exactly one active, source-valid `cue` record, then choose
+   **Propose managed cue in Author’s Note**. Inspect the existing Author’s Note
+   approval card and choose **Apply** or **Cancel**. This is a separate approval
+   from accepting narrative state.
+
+The existing episode Director, Editor, profiles and sessions remain independent.
+Canon supervision reads the existing directive and note for context, but does
+not replace episode plans or change their automation settings. Accepted cues
+reach the world engine only through the user-approved Author’s Note update.
+
+### State and evidence
+
+The existing `continuityCopilot.campaignLedger` gains a `narrative` child. The
+Campaign Ledger's existing records/review interface and storage identifier are
+unchanged. Narrative records have stable IDs, kind, subject, a named facet,
+text, epistemic class, lifecycle phase, confidence, audience and source proofs.
+Supported kinds cover stage, location, time, events, characters, encounters,
+agreements, canonical events, independent threads, knowledge, divergences,
+unresolved consequences and the current cue. Thread facets hold participants,
+baseline, last known event/location, expectations, dependencies and uncertainty.
+Agreement conditions remain separate records so an update does not silently
+replace the entire agreement. The model must request explicit retirement of
+superseded records; the user reviews those retirements before saving.
+
+Epistemic classes distinguish observed gameplay, retrieved source facts,
+inference, expected developments, unconfirmed information and contradictory
+evidence. Dialogue and thought provenance remain explicit. Source facts are
+what a source says, not automatically the truth of the selected continuity.
+Canonical-event records require a retrieved baseline explicitly configured as
+primary canon, adaptive screenplay or custom world lore, or retrieved enabled
+World Info. Precedence guides the model; it is not a deterministic conflict
+resolver or a semantic proof of authority.
+
+Causal classifications distinguish original canonical events, compatible
+improvisation, NPC/player/emergent divergence, pending divergence, omission,
+contradiction, characterization drift, knowledge-boundary violation and
+uncertainty. Divergence records separately identify initiator, subsequent
+decision and consequence. Confirmed consequential classifications require RP
+and source evidence and a completed consequence; predictions cannot be marked
+completed. Omission claims require full historical message/part coverage in
+that run. A search miss or recent silence is never proof of absence. If the
+budget cannot support a conclusion, report uncertainty instead.
+
+The model can cite only passages actually fetched in the run, or source-valid
+human-reviewed state explicitly supplied in that run. Citation keys identify
+RP message/part, document ID/revision/part, enabled lore entry/part, or a state
+record. Deterministic code supplies source proofs; the model does not recreate
+quotations. Narrative proofs contain references and fingerprints, not library
+bodies. Accepted records and configuration persist via native metadata save,
+reload and read-back verification. Failed or stale batches do not overwrite
+verified state; an ambiguous native save failure is reported explicitly.
+
+Editing, regeneration, deletion, reordering or branching invalidates records
+whose source fingerprints no longer match. A branch retains only interpretations
+whose cited evidence still exists. Document deselection/replacement and disabled
+or changed lore exclude affected records from reuse. Changing the continuity,
+source authority/precedence or player-character configuration invalidates prior
+interpretations under that policy. Retiring a record also invalidates conclusions
+that cite it. **Reconcile sources** names stale records; they remain inspectable
+as stale entries until retired and re-analyzed. They do not silently disappear
+from the stored ledger. The consistency/ripple scan names narrative references
+for review instead of editing their evidence through generic memory tools.
+
+**Player view** shows only human-reviewed, currently source-valid observations
+marked player-known. It hides director analysis, future expectations, cues and
+NPC-specific knowledge. Those audience labels are themselves human-reviewed
+model classifications, not an automatic guarantee against all semantic spoilers.
+External document/lore changes are checked on opening, reconciliation and
+analysis/approval; there is no background remote-source watcher.
+
+### Managed Author’s Note section
+
+The bridge owns only the text between `[CANON DIRECTOR]` and
+`[/CANON DIRECTOR]`. Updating it preserves text outside those markers exactly;
+without a section it proposes appending one. Duplicate, reversed or unmatched
+markers fail closed. An unchanged cue produces no new proposal. The existing
+Apply handler checks the note snapshot and, for Canon cues, source/state validity
+again, then performs the existing native save/reload/authoritative verification.
+Cancel during asynchronous validation still prevents the write. Depth, position,
+interval and unrelated note content are preserved. Narrative changes do not
+automatically rewrite an already applied cue: manually review/update it as play
+progresses or sources change.
+
+### Retrieval, performance and validation limits
+
+Canon supervision reuses Library `liblist/libsearch/libfetch`, World Info
+`wisearch/wifetch`, and `fullTextOf()` for chat text. Local `chatsearch` covers
+historical messages, including fetchable ghosted originals; previews/search
+indexes are explicitly unread. `statesearch/stateread` retrieve reviewed
+narrative state. Existing accepted Campaign records are background leads whose
+original messages must still be fetched for a new evidence claim.
+
+Each manual operation has separate limits: 24,000 RP characters, 24,000 Library
+serialized response characters, 48,000 lore characters, 18,000 state characters,
+6,000 index characters, and eight model transport attempts. Canon uses complete
+non-streaming JSON with one bounded malformed-response correction. Finish/stop
+reasons, empty responses and exhausted budgets are explicit failures, not
+successful partial updates. Other Chat Assistant workflows keep their streaming
+behavior. Stop and chat/state/source changes discard pending results.
+
+The initial context includes a bounded changed/new and recent RP sample, active
+critical state, and a bounded selection of operation-relevant stored threads or
+events. Additional history remains searchable; the incremental position is not
+an exhaustive-audit claim. Document bodies are cached only within one Canon run,
+and unchanged RP fingerprints are reused within that run. State is capped at
+120 records / 60,000 serialized characters; recent progress fingerprints are
+bounded. Retire obsolete records deliberately rather than silently pruning
+independent threads or agreement terms. Oversized critical state stops the run
+with an actionable error.
+
+`fixtures/canon-gameplay.json` contains active messages from the user-supplied
+Eminence in Shadow export, preserving their original indexes. It excludes chat
+metadata, assistant sessions and alternate swipes. The regression verifies the
+earlier appearance/departure, NPC initiation, negotiated conditions, first missed
+attack and still-pending bracket consequence against actual RP text. Synthetic
+reference text in tests is explicitly a transport/contract fixture, not evidence
+about the published novel. No setting-specific rules appear in production code.
+
+The mandatory `node load_test.mjs` covers these paths alongside prior regressions.
+`canon_dom_test.mjs` drives the real APP_READY panel, configuration, source review,
+Accept, disk-backed reload/server restart, managed-note Apply/Cancel, staleness,
+spoiler filtering and chat switching at mobile and desktop widths. Existing
+Library, panel, mobile-layout and attachment browser tests still apply. Tests
+use mocked model responses and native-API-shaped fixtures: a real model's factual
+interpretation, causal judgment, completeness of extracted wager terms and spoiler
+classification remain unverified. Original canonical books were not supplied
+with the RP export, so the tests do not independently adjudicate novel canon.
+Physical Samsung A07/Termux gameplay validation is still required. No semantic
+search, off-screen simulation, automatic scene detection or periodic supervision
+is enabled by this preview.
+
 ## v2.89.0-preview.1 — Persistent Document Library (feature branch)
 
 This preview is developed on `feature/persistent-document-library`; it does not

@@ -17,7 +17,7 @@
 
     const MODULE = 'continuityCopilot';
     const LOG = '[ChatAssistant]';
-    const VERSION = '2.89.0-preview.1';
+    const VERSION = '2.90.0-preview.1';
 
     // ------------------------------------------------------------------
     // Defaults
