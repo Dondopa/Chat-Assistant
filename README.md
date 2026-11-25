@@ -4,6 +4,82 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.90.0-preview.3 — Model-independent generation budgets and diagnostics
+
+Released only on `feature/canon-director`. Canon now respects Chat Assistant's
+configured **Max output tokens**. Retrieval requests use the lesser of that
+setting and **2048**; synthesis and repair retain the full configured setting.
+Retrieval asks for a tool request or `{"ready":true}` before reserved synthesis.
+Truncated retrieval output is discarded and proceeds to reserved synthesis;
+truncated final output is never accepted as complete. Existing phase call caps
+(6 retrieval, 2 synthesis, 2 repair) remain unchanged.
+
+### Investigation and reproduced defect
+
+With identical message arrays, the same selected profile and non-streaming raw
+response mode, preview.2 requested **8192** output tokens while ordinary Chat
+Assistant requested the configured **2048**. A deterministic capacity fixture
+accepted the initial Canon request but rejected the second request after a real
+Library fetch; ordinary Chat Assistant succeeded with the same input. Measured
+input grew from **22,699** to **29,311 characters**. The fixture's context ceiling
+was **13,967 tokens**, a test constraint, not a claimed NanoGPT/model limit.
+The Canon system prompt was **9,851 characters**; the ordinary base system prompt
+was **20,620**, before its additional context. This does not establish a system
+prompt size or role-format defect.
+
+Both flows reuse the profile/current-connection transport and Library retrieval
+format. Canon intentionally uses non-streaming JSON and bounded validation,
+where ordinary requests may use streaming and Smart generation recovery.
+Retrieval does not request structured output. No provider-specific parameters,
+model-name exceptions, role rewrites, or increased retry limits were added.
+The hardcoded output override and discarded nested provider errors are proven
+implementation defects. The exact original live NanoGPT failure cannot be
+reconstructed from preview.2's generic diagnostic; a live provider replay remains
+unverified.
+
+### Capacity and failure reporting
+
+When native SillyTavern APIs expose a context limit, Canon resolves it from the
+**selected profile's preset**, or current chat-completion settings when using
+that connection. It never borrows another connection's settings. Input is
+estimated from characters, schema and message overhead, with a safety margin;
+this is explicitly approximate, not the selected model's tokenizer. Preflight
+reserves the full configured synthesis output and reports estimated overflow
+before transport. It does not silently trim evidence or reduce the final answer
+budget. Provider transformations and tokenizers can still differ from estimates.
+
+An RP preset's output length is not a model's hard output limit. Unknown context
+and model output limits remain explicitly unknown. Configure Max output tokens
+within your model's supported limit; these host APIs do not expose a universal
+model capability registry. Small configured budgets are respected. Compatibility
+still depends on the selected model producing valid evidence-backed records.
+
+Expandable **Run diagnostics** now shows sanitized nested provider messages,
+HTTP status when exposed, category, failed phase/call, transport versus provider
+generation/parsing/validation/preflight, measured input/system/schema characters,
+approximate input tokens, requested output, retrieved context size, connection
+path, timeout and whether structured output was requested. Request objects,
+headers, credentials and URLs are omitted/redacted; absent HTTP status stays
+unknown. The shared timeout race now settles its timeout error before aborting,
+so an abort listener cannot disguise a timeout as a user stop.
+
+### Verification and live check
+
+`node load_test.mjs`: **908 passed, 0 failed**. Regression coverage compares the
+two pipelines with equivalent inputs, phase budgets, low output limits, selected
+profile isolation, context reservation, truncated retrieval, schema failures,
+nested HTTP errors, redaction, response parsing, current-connection transport,
+and real timeout recovery. All **14 deliberate fault injections** made the gate
+exit 1 with relevant failed assertions. Browser regressions passed for Canon controls and
+expandable failure diagnostics, panel/ledger visibility, mobile layout and
+persistent Library operations. These use mocked providers/native APIs and
+browser viewports; they do not prove every live provider or a physical phone.
+
+Update this feature branch, confirm preview.3 in the panel, choose an appropriate
+Max output tokens setting, and retry Initialize canon from this scene. If it
+fails, expand Run diagnostics for the phase, budget and sanitized provider cause.
+No narrative state is automatically accepted by this update.
+
 ## v2.90.0-preview.2 — Canon validation and bounded recovery
 
 This update stays on `feature/canon-director`. It fixes the live
