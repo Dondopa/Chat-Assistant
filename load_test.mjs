@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { canonStore, canonAnalyze, canonParse, canonProofValid, canonValid, canonManagedNote, canonProposeCue, canonAccept, canonPersist, canonChatFetch, canonTool, canonEnvironment, canonStateRead, canonFingerprint, canonAssert, getCanonPending:()=>canonPending, librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -1032,7 +1032,7 @@ console.log('== v2.69.0 invariants: the stop flag belongs to the RUN, not to one
 // the user had already cancelled.
 ok(/function beginRun\(\) \{\n        running = true;\n        stopRequested = false;\n        setBusy\(true\);\n    \}/.test(SRC), 'beginRun() is the one place a run starts: takes the lock AND clears the stop flag');
 ok((SRC.match(/\n        running = true;/g) || []).length === 1, 'the lock is taken in exactly one place (beginRun), nowhere else');
-ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 11, 'all 11 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 11)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
+ok((SRC.match(/\n        beginRun\(\);/g) || []).length === 13, 'all 13 run entrypoints route through beginRun (found ' + (SRC.match(/\n        beginRun\(\);/g) || []).length + ', need 13)');   // +1 in v2.72 (runDeepAudit), +1 in v2.73 (runMemoryPass)
 ok(!/const maxTok = [^\n]*\n        stopRequested = false;/.test(SRC), 'callLLM no longer clears the stop flag');
 ok(/if \(stopRequested\) return '';\n        try \{ abortCtl = new AbortController/.test(SRC), 'callLLM refuses to open a request when the run is already stopped');
 
@@ -3126,6 +3126,141 @@ ctx.chatMetadata={};let raced=false;globalThis.fetch=async(url,options={})=>{
 };rejected=false;try{await lib.libraryCommit({...info('Concurrent import'),text:'race body'});}catch{rejected=true;}
 ok(rejected&&!(await lib.libraryCatalog()).documents.some(d=>d.title==='Concurrent import'),'detected concurrent catalog change refuses to overwrite another writer');
 globalThis.fetch=nativeLibraryFetch;
+console.log('== v2.90 Canon Director: actual gameplay, evidence, state and managed cues ==');
+const cd=globalThis.__campaignTest;
+const gameplay=JSON.parse(readFileSync(join(HERE,'fixtures/canon-gameplay.json'),'utf8')).messages;
+ok(gameplay[2].mes.includes('Beatrix was here, but on her own business.')&&gameplay[4].mes.includes('Beatrix, had vanished back into the crowd'),'real fixture proves earlier appearance followed by off-screen absence');
+ok(gameplay[4].mes.includes('Goldoh: *Calling out')&&gameplay[5].is_user,'fixture distinguishes NPC initiation from the later player response');
+ok(gameplay[8].mes.includes('No killing, no crippling!')&&gameplay[8].mes.includes('No tournament for you. Ever.')&&gameplay[9].mes.includes('No hit had been landed.'),'fixture preserves restrictions, loss condition and first missed attack');
+ctx.chatId='canon-gameplay';ctx.chatMetadata={note_prompt:'Existing prose directive\nUnrelated note',note_depth:4};ctx.chat=structuredClone(gameplay);
+CA.wiBooks='CanonFixture';CA.streaming=false;CA.profileId='gate-profile';
+let canonDisk=structuredClone(ctx.chatMetadata),canonSaveFail=false,canonReloadOld=false;
+ctx.saveMetadata=async()=>{if(canonSaveFail)throw new Error('disk failure');canonDisk=structuredClone(ctx.chatMetadata);};
+ctx.reloadCurrentChat=async()=>{ctx.chatMetadata=structuredClone(canonReloadOld?{note_prompt:'Existing prose directive'}:canonDisk);};
+ctx.updateChatMetadata=(value,reset)=>{ctx.chatMetadata=reset?value:{...ctx.chatMetadata,...value};};
+let loreBody='Synthetic baseline for contract testing, not a claim about the published novel: a private practice bout need not alter a tournament; a transfer requires completion and confirmation.';
+ctx.loadWorldInfo=async()=>({entries:{1:{uid:1,key:['tournament'],comment:'Test baseline',content:loreBody},2:{uid:2,key:['secret'],comment:'Disabled',content:'DISABLED_SOURCE',disable:true}}});
+const baseline=await cd.libraryCommit({...info('Synthetic primary source fixture'),text:'SYNTHETIC_CANON_BASELINE. Expected off-screen developments are not verified gameplay. Character lore is separate from player-created characters.'});
+await cd.librarySelect(baseline.id,true,{id:ctx.chatId,md:ctx.chatMetadata});
+cd.canonStore().config={continuity:'Light-novel continuity (test fixture authority only)',sources:[{id:baseline.id,authority:'primary canon',precedence:1}],playerCharacters:['Bunyon Irons'],spoilers:true};
+const cRef=()=>({id:ctx.chatId,md:ctx.chatMetadata});
+const chatRefId=i=>'chat:'+i+'#1';const docRef='doc:'+baseline.id+':'+baseline.revision+'@1';
+const fact=(kind,subject,facet,text,refs,extra={})=>({kind,subject,facet,text,refs,epistemic:'observed',phase:'active',confidence:'high',audience:'director',provenance:'narration',...extra});
+const wager='Goldoh/Bunyon wager';
+const candidateRecords=[
+ fact('character','Beatrix','last_seen','Appeared earlier, then left the immediate scene. Current off-screen activity is unknown.',[chatRefId(2),chatRefId(4)],{phase:'unknown'}),
+ fact('event','Goldoh','initiator','Goldoh addressed Bunyon first.',[chatRefId(4)],{phase:'completed'}),
+ fact('agreement',wager,'attempts','Goldoh has three attempts to land a hit.',[chatRefId(7),chatRefId(8)],{provenance:'dialogue'}),
+ fact('agreement',wager,'gold','If Goldoh lands a hit, Bunyon owes the gold: the offered stake was five hundred.',[chatRefId(6),chatRefId(8)],{provenance:'dialogue'}),
+ fact('agreement',wager,'slot','If Goldoh fails in three attempts, he yields his slot; Bunyon proposed being slotted in.',[chatRefId(7),chatRefId(8)],{provenance:'dialogue'}),
+ fact('agreement',wager,'exclusion','If Goldoh succeeds, Bunyon leaves this festival and does not return; no tournament ever.',[chatRefId(8)],{provenance:'dialogue'}),
+ fact('agreement',wager,'restrictions','The official prohibits killing and crippling.',[chatRefId(8)],{provenance:'dialogue'}),
+ fact('agreement',wager,'acceptance','Bunyon says Deal and enters the ring.',[chatRefId(9)],{provenance:'mixed'}),
+ fact('encounter',wager,'progress','One attack has missed. The bout remains active; no bracket transfer is confirmed.',[chatRefId(9)]),
+ fact('divergence',wager,'causality','A bracket transfer is a potential consequence, not a completed change.',[chatRefId(4),chatRefId(7),chatRefId(8),chatRefId(9),docRef],{epistemic:'inference',phase:'pending',classification:'pending_divergence',initiator:'Goldoh',decision:'Bunyon counterproposed the bracket stake; Goldoh added exclusion.',consequence:'Possible slot transfer only after the unresolved bout.'}),
+ fact('thread','Independent canonical threads','next_expected','Consult baseline before asserting off-screen progress; not confirmed here.',[docRef],{epistemic:'expected',phase:'pending',provenance:'source',confidence:'low'}),
+ fact('cue','Current scene','guidance','Preserve the accepted three-attempt wager, gold/slot/exclusion stakes and no-killing/no-crippling restriction. One miss so far. Keep independent NPC agency and unknown off-screen activity; do not decide the outcome or transfer the bracket yet.',[chatRefId(6),chatRefId(7),chatRefId(8),chatRefId(9),docRef],{epistemic:'inference'})
+];
+const finalValue={records:candidateRecords,retire:[],summary:'Director-only: Beatrix appeared earlier. This encounter began with an NPC initiative. Bracket consequences remain pending.',cueAssessment:'Current note has no managed cue; propose concise guidance without replacing prose directive.'};
+let canonCalls=[];
+const script=[{tool:'chatfetch',value:[4,6]},{tool:'liblist',value:{}},{tool:'libfetch',value:[baseline.id+':'+baseline.revision+'@1']},{tool:'wisearch',value:{query:'tournament'}},{tool:'wifetch',value:['CanonFixture#1@1','CanonFixture#2@1']},finalValue];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m)=>{canonCalls.push(structuredClone(m));return JSON.stringify(script[canonCalls.length-1]);};
+await cd.canonAnalyze('initialize');let proposal=cd.getCanonPending();
+ok(!!proposal&&proposal.records.length===candidateRecords.length&&cd.canonStore().records.length===0,'manual analysis stages real-gameplay candidates; it cannot silently establish state');
+ok(canonCalls.length===script.length&&proposal?.calls===canonCalls.length,'every Canon Director model call is counted, including tool rounds');
+ok(JSON.stringify(canonCalls[0]).includes('Beatrix was here')&&!JSON.stringify(canonCalls[0]).includes('SYNTHETIC_CANON_BASELINE'),'initialization consults older actual RP without automatically injecting library documents');
+ok(JSON.stringify(canonCalls[3]).includes('SYNTHETIC_CANON_BASELINE')&&!JSON.stringify(canonCalls).includes('DISABLED_SOURCE'),'selected library fetch is bounded and disabled lore is excluded even when guessed');
+ok(canonCalls[0][0].content.includes('Every')||canonCalls[0][0].content.includes('EVERY material condition'),'prompt explicitly preserves every material agreement condition');
+ok(canonCalls[0][0].content.includes('ABSENCE LAW')&&canonCalls[0][0].content.includes('Pending bracket changes')&&JSON.stringify(canonCalls[0]).includes('Bunyon Irons'),'absence, pending outcomes and configured player-created identities reach the actual model path');
+await cd.canonAccept();
+ok(cd.canonStore().records.length===candidateRecords.length&&JSON.stringify(canonDisk).includes('three attempts'),'accepted state persists through native save/reload independently of assistant history');
+ok(cd.canonStore().records.filter(r=>r.kind==='agreement').length===candidateRecords.filter(r=>r.kind==='agreement').length,'all independently material wager conditions survive acceptance');
+const acceptedState=structuredClone(cd.canonStore()),validEnv=await cd.canonEnvironment();
+const beatrix=cd.canonStore().records.find(r=>r.subject==='Beatrix');
+ok(cd.canonValid(beatrix,validEnv),'earlier appearance remains source-valid when character is absent from the recent scene');
+const dummyRun={...proposal.run,base:cd.canonFingerprint(),chat:cRef(),chatPrint:JSON.stringify(ctx.chat.map(cd.campaignFingerprint)),calls:1,valid:cd.canonStore().records,evidence:new Map(proposal.run.evidence)};
+const rejectsCanon=value=>{try{cd.canonParse(value,dummyRun);return false;}catch{return true;}};
+const badRecord=(patch)=>({...finalValue,records:[{...candidateRecords[0],...patch}]});
+ok(rejectsCanon(badRecord({refs:['chat:12345#1']})),'unretrieved citations reject the whole proposed batch');
+ok(rejectsCanon(badRecord({refs:[docRef],epistemic:'observed'})),'canonical document alone cannot establish gameplay occurrence');
+ok(rejectsCanon(badRecord({epistemic:'expected',phase:'completed'})),'expected off-screen progress cannot be recorded as completed');
+ok(rejectsCanon(badRecord({epistemic:'observed',provenance:'thought'})),'thought content cannot become objective observed gameplay');
+ok(rejectsCanon(badRecord({kind:'event',provenance:'dialogue'})),'NPC dialogue cannot establish objective events');
+ok(rejectsCanon(badRecord({epistemic:'source',refs:[chatRefId(2)]})),'RP alone cannot prove a canonical source fact');
+ok(rejectsCanon(badRecord({kind:'canonical_event',epistemic:'expected',phase:'pending',refs:[chatRefId(2)]})),'canonical event expectations require a retrieved configured baseline rather than RP alone');
+const divergence=candidateRecords.find(r=>r.kind==='divergence');
+ok(rejectsCanon({...finalValue,records:[{...divergence,classification:'player_driven_divergence'}]}),'potential bracket transfer cannot pass as confirmed player-driven divergence');
+ok(rejectsCanon({...finalValue,records:[{...divergence,refs:[chatRefId(7)],classification:'canonical_contradiction',epistemic:'contradictory',phase:'completed'}]}),'canonical contradiction needs an actually fetched baseline');
+ok(rejectsCanon({...finalValue,records:[{...divergence,classification:'canonical_omission'}]}),'no-appearance/omission conclusion requires complete historical coverage, not a recent window');
+ok(rejectsCanon({...finalValue,retire:['UNKNOWN']}),'retirement cannot silently remove an unknown record');
+const remembered=cd.canonStateRead(dummyRun,['state:'+beatrix.id]);
+ok(remembered.includes('Beatrix')&&dummyRun.evidence.has('state:'+beatrix.id),'reviewed earlier appearance can be retrieved from persistent state without rereading entire chat');
+const modelUnconfirmed=structuredClone(candidateRecords[0]);modelUnconfirmed.epistemic='unconfirmed';modelUnconfirmed.phase='unknown';
+const unknownParsed=cd.canonParse({...finalValue,records:[modelUnconfirmed]},dummyRun);
+ok(unknownParsed.records[0].epistemic==='unconfirmed','insufficient evidence remains explicitly unconfirmed rather than fabricated certainty');
+const beforeEdit=ctx.chat[2].mes;ctx.chat[2].mes='Regenerated scene';
+ok(!cd.canonValid(beatrix,validEnv),'editing/regenerating an earlier appearance invalidates its persistent record');ctx.chat[2].mes=beforeEdit;
+const beforeDelete=ctx.chat;ctx.chat=ctx.chat.slice(0,2);
+ok(!cd.canonValid(beatrix,validEnv),'branching before the evidence excludes later persistent facts');ctx.chat=beforeDelete;
+const cue=cd.canonStore().records.find(r=>r.kind==='cue');
+ok(!cd.canonValid(cue,{...validEnv,documents:[]}), 'unselected library sources cannot re-enter through narrative state');
+ok(!cd.canonProofValid({type:'wi',book:'CanonFixture',uid:'2',fingerprint:'x'},validEnv),'disabled World Info cannot validate narrative evidence');
+const newBaseline={...baseline,revision:crypto.randomUUID()};ok(!cd.canonValid(cue,{...validEnv,documents:[newBaseline]}),'replacing a document invalidates inherited narrative references');
+const oldPolicy=cd.canonStore().config.continuity;cd.canonStore().config.continuity='Another continuity';
+ok(!cd.canonValid(beatrix,validEnv),'continuity/authority policy changes invalidate prior interpretations before reuse');cd.canonStore().config.continuity=oldPolicy;
+const dependent=cd.canonParse({...finalValue,records:[{...candidateRecords[0],refs:['state:'+beatrix.id]}]},dummyRun).records[0];
+ok(cd.canonValid(dependent,validEnv),'derived reviewed-state record retains valid source lineage');
+cd.canonStore().records=cd.canonStore().records.filter(r=>r.id!==beatrix.id);
+ok(!cd.canonValid(dependent,validEnv),'retiring an erroneous state record invalidates dependent interpretations');cd.canonStore().records=structuredClone(acceptedState.records);
+ok(rejectsCanon({...finalValue,records:[{...candidateRecords[0],refs:['state:'+beatrix.id]}],retire:[beatrix.id]}),'cannot retire the very state record cited as a new claim source');
+dummyRun.base=cd.canonFingerprint();dummyRun.chat=cRef();fileReads.length=0;
+await cd.canonTool(dummyRun,'libfetch',[baseline.id+':'+baseline.revision+'@1']);
+ok(!fileReads.includes('/user/files/'+baseline.file),'Canon retrieval reuses run-local document text instead of fetching the full body repeatedly');
+const boundedChat={chatBudget:6500,evidence:new Map()};const hugeBefore=ctx.chat[0].mes;ctx.chat[0].mes='BOUNDARY '.repeat(1800);
+const firstPart=cd.canonChatFetch(boundedChat,['0#1','0#2','0#3']);
+ok(firstPart.includes('PART 1')&&firstPart.includes('NOT SERVED')&&boundedChat.evidence.size===1,'chat evidence is explicitly partial, budgeted and unserved parts never become citations');ctx.chat[0].mes=hugeBefore;
+const wiProof=proposal.run.evidence.get('wi:CanonFixture#1@1').proofs[0];loreBody+=' changed';
+ok(!cd.canonProofValid(wiProof,await cd.canonEnvironment()),'changed lore content invalidates previously retrieved canonical references');loreBody=loreBody.slice(0,-8);
+const noteBefore=ctx.chatMetadata.note_prompt;
+await cd.canonProposeCue();let noteProposal=cd.anPendingProposal();
+ok(noteProposal?.result.startsWith(noteBefore)&&ctx.chatMetadata.note_prompt===noteBefore,'managed cue proposal preserves unrelated prose and performs no write');
+cd.anCancel();ok(ctx.chatMetadata.note_prompt===noteBefore,'managed cue Cancel remains non-mutating');
+await cd.canonProposeCue();noteProposal=cd.anPendingProposal();const cueResult=noteProposal.result;
+await cd.anApply(noteProposal);
+ok(ctx.chatMetadata.note_prompt===cueResult&&canonDisk.note_prompt===cueResult&&ctx.chatMetadata.note_depth===4,'existing Author Note Apply saves/reloads/verifies managed cue and preserves note settings');
+const replacement=cd.canonManagedNote(cueResult,'Updated concise cue');
+ok(replacement.startsWith(noteBefore)&&replacement.includes('Updated concise cue')&&!replacement.includes(cue.text),'managed replacement removes obsolete cue without accumulating sections');
+for(const malformed of ['[CANON DIRECTOR] broken','[/CANON DIRECTOR] bad [CANON DIRECTOR]','[CANON DIRECTOR]a[/CANON DIRECTOR][CANON DIRECTOR]b[/CANON DIRECTOR]']){let blocked=false;try{cd.canonManagedNote(malformed,'safe');}catch{blocked=true;}ok(blocked,'malformed/duplicate managed sections fail closed');}
+// A cancellation while the extra cue/source check awaits cannot bypass Cancel.
+ctx.chatMetadata.note_prompt='Existing prose directive';await cd.canonProposeCue();noteProposal=cd.anPendingProposal();
+let releaseCue;noteProposal.canonGuard=()=>new Promise(resolve=>{releaseCue=resolve});const applyingCancelled=cd.anApply(noteProposal);await sleep(5);cd.anCancel(noteProposal);releaseCue();
+ok(await applyingCancelled===false&&ctx.chatMetadata.note_prompt==='Existing prose directive','Cancel during asynchronous cue validation prevents Author Note writes');
+await cd.canonProposeCue();noteProposal=cd.anPendingProposal();const changedSource=ctx.chat[7].mes;ctx.chat[7].mes='Changed after proposal';
+ok(await cd.anApply(noteProposal)===false&&ctx.chatMetadata.note_prompt==='Existing prose directive','source edit after cue proposal blocks the actual Author Note Apply path');ctx.chat[7].mes=changedSource;
+// State save failures and stale source changes do not commit a proposal.
+let nextState=structuredClone(cd.canonStore());nextState.revision++;canonSaveFail=true;let stateFailed=false;
+try{await cd.canonPersist(nextState,cRef(),cd.canonFingerprint());}catch{stateFailed=true;}canonSaveFail=false;
+ok(stateFailed&&cd.canonStore().revision===acceptedState.revision,'failed narrative save reports failure and restores previous state');
+canonReloadOld=true;stateFailed=false;try{await cd.canonPersist(nextState,cRef(),cd.canonFingerprint());}catch{stateFailed=true;}canonReloadOld=false;
+ok(stateFailed,'reload restoring old narrative state is detected rather than reported successful');
+ctx.chatMetadata=structuredClone(canonDisk);ctx.chatMetadata.continuityCopilot.campaignLedger.narrative=structuredClone(acceptedState);
+const staleChat=cRef(),staleBase=cd.canonFingerprint();ctx.chatId='different-chat';ctx.chatMetadata={note_prompt:''};stateFailed=false;
+try{await cd.canonPersist(nextState,staleChat,staleBase);}catch{stateFailed=true;}
+ok(stateFailed&&!ctx.chatMetadata.continuityCopilot,'state persistence cannot leak into a switched chat');
+ctx.chatId='canon-gameplay';ctx.chatMetadata=structuredClone(canonDisk);ctx.chatMetadata.continuityCopilot.campaignLedger.narrative=structuredClone(acceptedState);
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chat.push({mes:'A new event arrived',name:'Narrator'});return JSON.stringify({records:[],retire:[],summary:'stale result',cueAssessment:''});};await cd.canonAnalyze('integrity');
+ok(!cd.getCanonPending(),'even an uncited new RP message during generation invalidates the snapshot');ctx.chat.pop();
+let loopingCalls=0;CA.streaming=true;ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,_t,options)=>{loopingCalls++;ok(!options.stream,'Canon JSON supervision avoids hidden streaming/fallback calls');return JSON.stringify({tool:'statesearch',value:{query:'wager',offset:0}});};await cd.canonAnalyze('parallel');
+ok(loopingCalls===8&&!cd.getCanonPending(),'repeated retrieval stops at the independent eight-call supervision budget');CA.streaming=false;
+ctx.ConnectionManagerRequestService.sendRequest=async()=>({choices:[{message:{content:JSON.stringify({records:[],retire:[],summary:'partial',cueAssessment:''})},finish_reason:'length'}]});await cd.canonAnalyze('progression');
+ok(!cd.getCanonPending(),'valid-looking JSON with a truncated finish reason cannot become a completed narrative review');
+let malformedCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{malformedCalls++;return '';};await cd.canonAnalyze('integrity');
+ok(malformedCalls===2&&!cd.getCanonPending(),'empty intermediate/final response gets one bounded correction then explicit failure');
+let stopCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{stopCalls++;clickFresh('chatassist_stop');return JSON.stringify({tool:'chatfetch',value:[4]});};await cd.canonAnalyze('stage');
+ok(stopCalls===1&&!cd.getCanonPending(),'Stop survives tool boundaries and prevents another Canon Director call');
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chatId='switch-during-model';ctx.chatMetadata={note_prompt:''};return JSON.stringify(finalValue);};await cd.canonAnalyze('stage');
+ok(!cd.getCanonPending()&&!ctx.chatMetadata.continuityCopilot,'chat switch during generation discards narrative proposal');
+
 globalThis.fetch=oldFetch;ctx.chatMetadata={};ctx.chat=[];
 
 console.log('');
