@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { canonStore, canonAnalyze, canonParse, canonProofValid, canonValid, canonManagedNote, canonProposeCue, canonAccept, canonPersist, canonChatFetch, canonTool, canonEnvironment, canonStateRead, canonFingerprint, canonAssert, getCanonPending:()=>canonPending, librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { canonStore, canonAnalyze, canonParse, canonRepair, canonSchema, callLLM, canonEnum, CANON_CAUSES, canonSafe, getCanonDiagnostics:()=>canonDiagnostics, canonProofValid, canonValid, canonManagedNote, canonProposeCue, canonAccept, canonPersist, canonChatFetch, canonTool, canonEnvironment, canonStateRead, canonFingerprint, canonAssert, getCanonPending:()=>canonPending, librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -3198,6 +3198,39 @@ ok(remembered.includes('Beatrix')&&dummyRun.evidence.has('state:'+beatrix.id),'r
 const modelUnconfirmed=structuredClone(candidateRecords[0]);modelUnconfirmed.epistemic='unconfirmed';modelUnconfirmed.phase='unknown';
 const unknownParsed=cd.canonParse({...finalValue,records:[modelUnconfirmed]},dummyRun);
 ok(unknownParsed.records[0].epistemic==='unconfirmed','insufficient evidence remains explicitly unconfirmed rather than fabricated certainty');
+
+// Realistic imperfect causal output: field diagnostics, harmless spelling and independent salvage.
+const imperfect={...divergence,classification:undefined};
+const validatePartial=records=>cd.canonParse({...finalValue,records},dummyRun,true);
+let broken=validatePartial([imperfect]);let issue=broken.rejected.find(d=>d.field==='classification');
+ok(issue?.recordIndex===1&&issue.kind==='divergence'&&issue.subject===wager&&issue.facet==='causality'&&issue.status==='missing'&&issue.received==='(missing)'&&issue.accepted.includes('pending_divergence'),'missing causal classification identifies record, identity, field and allowed values');
+broken=validatePartial([{...imperfect,classification:'alternate timeline'}]);issue=broken.rejected.find(d=>d.field==='classification');
+ok(issue?.status==='invalid'&&issue.received==='alternate timeline'&&broken.records.length===0,'unknown causal concepts remain invalid rather than becoming confirmed canon');
+for(const label of [' Pending Divergence ','PENDING-DIVERGENCE','pending   divergence','pending_divergence'])ok(validatePartial([{...divergence,classification:label}]).records[0]?.classification==='pending_divergence','harmless causal label normalizes: '+label);
+ok(validatePartial([{...divergence,classification:'player driven divergence'}]).records.length===0,'normalization cannot bypass confirmed-consequence guards');
+for(const classification of ['canon-compatible improvisation','Uncertain'])ok(validatePartial([{...divergence,classification,refs:[chatRefId(7)]}]).records.length===1,'human-readable compatible/uncertain classification retains evidence requirements: '+classification);
+broken=validatePartial([{...imperfect,initiator:undefined,decision:undefined,consequence:undefined},{...divergence,classification:'quantum canon'}]);
+ok(['classification','initiator','decision','consequence'].every(field=>broken.rejected.some(d=>d.recordIndex===1&&d.field===field))&&broken.rejected.some(d=>d.recordIndex===2),'multiple invalid records and all missing divergence fields are reported together');
+const schema=cd.canonSchema().value.properties.records.items.anyOf[1];
+ok(JSON.stringify(schema.properties.classification.enum)===JSON.stringify(cd.CANON_CAUSES)&&['classification','initiator','decision','consequence'].every(f=>schema.required.includes(f)),'structured schema uses validator constants and includes every divergence field');
+ok(canonCalls[0][0].content.includes('"classification": "canon_compatible_improvisation"')&&canonCalls[0][0].content.includes('"classification": "pending_divergence"')&&canonCalls[0][0].content.includes('"classification": "uncertain"'),'prompt contains complete ordinary, compatible, pending and uncertain examples');
+const savedIdentity=JSON.stringify(cd.canonStore());
+broken=validatePartial([candidateRecords[0],imperfect,{...candidateRecords[1],dependsOn:[2]},{...candidateRecords[2],dependsOn:[3]},candidateRecords[11]]);
+ok(broken.incomplete&&broken.records.length===1&&broken.records[0].subject==='Beatrix'&&broken.rejected.some(d=>d.recordIndex===3)&&broken.rejected.some(d=>d.recordIndex===4)&&broken.rejected.some(d=>d.recordIndex===5),'partial results reject transitive dependents and synthesized cues while retaining independent evidence');
+ok(JSON.stringify(cd.canonStore())===savedIdentity,'partial validation never mutates previously accepted state');
+const partialRetire=cd.canonParse({...finalValue,records:[candidateRecords[1],imperfect],retire:[beatrix.id]},dummyRun,true);
+ok(partialRetire.retire.length===0,'incomplete proposals cannot retire accepted state');
+broken=validatePartial([{...candidateRecords[0],dependsOn:[2]},{...candidateRecords[1],dependsOn:[1]}]);
+ok(broken.records.length===0,'cyclic proposal dependencies reject all affected candidates');
+broken=validatePartial([{...candidateRecords[0],dependsOn:[99]}]);ok(broken.rejected.some(d=>d.field==='dependsOn'),'foreign candidate dependency indexes are refused');
+const patchBase={...finalValue,records:[candidateRecords[0],imperfect]},patchValidation=validatePartial(patchBase.records);
+let patchBlocked=false;try{cd.canonRepair(patchBase,{repairs:[{index:1,record:divergence}]},patchValidation);}catch{patchBlocked=true;}
+ok(patchBlocked&&patchBase.records[0]===candidateRecords[0],'targeted repair cannot overwrite an already valid record');
+patchBlocked=false;try{cd.canonRepair(patchBase,{repairs:[{index:2,record:divergence},{index:2,record:divergence}]},patchValidation);}catch{patchBlocked=true;}
+ok(patchBlocked,'duplicate repair indexes fail closed');
+const safeDiagnostic=cd.canonSafe('ghp_FAKE_NOT_A_REAL_SECRET sk-FAKE_TEST_KEY Authorization=FAKEAUTH https://user:fakepass@example.test');
+ok(!safeDiagnostic.includes('FAKE')&&!safeDiagnostic.includes('fakepass'),'diagnostic values redact credential-shaped text and URL authentication');
+
 const beforeEdit=ctx.chat[2].mes;ctx.chat[2].mes='Regenerated scene';
 ok(!cd.canonValid(beatrix,validEnv),'editing/regenerating an earlier appearance invalidates its persistent record');ctx.chat[2].mes=beforeEdit;
 const beforeDelete=ctx.chat;ctx.chat=ctx.chat.slice(0,2);
@@ -3251,11 +3284,66 @@ ctx.chatId='canon-gameplay';ctx.chatMetadata=structuredClone(canonDisk);ctx.chat
 ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chat.push({mes:'A new event arrived',name:'Narrator'});return JSON.stringify({records:[],retire:[],summary:'stale result',cueAssessment:''});};await cd.canonAnalyze('integrity');
 ok(!cd.getCanonPending(),'even an uncited new RP message during generation invalidates the snapshot');ctx.chat.pop();
 let loopingCalls=0;CA.streaming=true;ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,_t,options)=>{loopingCalls++;ok(!options.stream,'Canon JSON supervision avoids hidden streaming/fallback calls');return JSON.stringify({tool:'statesearch',value:{query:'wager',offset:0}});};await cd.canonAnalyze('parallel');
-ok(loopingCalls===8&&!cd.getCanonPending(),'repeated retrieval stops at the independent eight-call supervision budget');CA.streaming=false;
+ok(loopingCalls===9&&!cd.getCanonPending(),'six retrieval calls reserve synthesis and two repairs; tools cannot consume repair calls');CA.streaming=false;
 ctx.ConnectionManagerRequestService.sendRequest=async()=>({choices:[{message:{content:JSON.stringify({records:[],retire:[],summary:'partial',cueAssessment:''})},finish_reason:'length'}]});await cd.canonAnalyze('progression');
 ok(!cd.getCanonPending(),'valid-looking JSON with a truncated finish reason cannot become a completed narrative review');
 let malformedCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{malformedCalls++;return '';};await cd.canonAnalyze('integrity');
-ok(malformedCalls===2&&!cd.getCanonPending(),'empty intermediate/final response gets one bounded correction then explicit failure');
+ok(malformedCalls===4&&!cd.getCanonPending(),'empty response gets reserved synthesis and two bounded repairs then explicit failure');
+
+console.log('== preview.2 bounded synthesis, targeted recovery and partial review ==');
+const runtimeGood={...candidateRecords[2],text:'Three attempts remain the agreed limit.'};
+const runtimeBad={...divergence,classification:'Alternate Canon',refs:[chatRefId(7)],phase:'unknown'};
+const runtimeFixed={...runtimeBad,classification:'Canon-compatible improvisation'};
+const runtimeFinal={records:[runtimeGood,runtimeBad],retire:[],summary:'Mixed response: valid agreement and unresolved causal classification.',cueAssessment:'Do not update the cue until the causal assessment is reviewed.'};
+const stateBeforeRuntime=structuredClone(cd.canonStore());
+const runtimeTranscript=[];let runtimeCalls=0;
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m)=>{runtimeTranscript.push(structuredClone(m));runtimeCalls++;if(runtimeCalls<=6)return JSON.stringify({tool:'chatfetch',value:[4]});if(runtimeCalls===7)return JSON.stringify(runtimeFinal);return JSON.stringify({repairs:[{index:2,record:runtimeCalls===8?runtimeBad:runtimeFixed}]});};
+await cd.canonAnalyze('initialize');let recovered=cd.getCanonPending();
+ok(runtimeCalls===9&&recovered?.records.length===2&&!recovered.incomplete&&recovered.counts.retrieval===6&&recovered.counts.synthesis===1&&recovered.counts.repair===2,'failure at former final call recovers on the last permitted repair call');
+ok(runtimeTranscript.slice(7).every(m=>m.filter(x=>x.role==='assistant'&&x.content.includes('"tool"')).length===6)&&runtimeTranscript[8].at(-1).content.includes('"classification"')&&runtimeTranscript[8].at(-1).content.includes('"recordIndex":2'),'repair reuses retrieved evidence and sends precise affected-record feedback without rerunning tools');
+ok(JSON.stringify(cd.canonStore())===JSON.stringify(stateBeforeRuntime),'successful repair still requires review and preserves previously accepted state');
+// Exhaustion retains only independently validated candidates; no retirement or audit progress.
+ctx.chat.push({name:'Narrator',is_user:false,mes:'A later scene arrives, not yet reviewed.'});
+let partialCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{partialCalls++;return JSON.stringify(partialCalls===1?{tool:'chatfetch',value:[7,ctx.chat.length-1]}:partialCalls===2?{...runtimeFinal,retire:[beatrix.id]}:{repairs:[{index:2,record:runtimeBad}]});};
+await cd.canonAnalyze('initialize');let partialProposal=cd.getCanonPending();
+ok(partialCalls===4&&partialProposal?.incomplete&&partialProposal.records.length===1&&partialProposal.retire.length===0&&partialProposal.rejected.some(d=>d.recordIndex===2),'exhausted correction budget offers labelled independent partial results, not a silent success');
+ok(JSON.stringify(cd.canonStore())===JSON.stringify(stateBeforeRuntime),'unapproved partial analysis leaves accepted state untouched');
+await cd.canonAccept();const partialSaved=cd.canonStore();
+ok(partialSaved.records.length===stateBeforeRuntime.records.length+1&&partialSaved.records.some(r=>r.id===beatrix.id)&&partialSaved.next===stateBeforeRuntime.next&&JSON.stringify(partialSaved.coverage)===JSON.stringify(stateBeforeRuntime.coverage)&&partialSaved.lastRun.incomplete,'explicit partial acceptance preserves old records and coverage cursor while recording incomplete status');
+ctx.chatMetadata.continuityCopilot.campaignLedger.narrative=structuredClone(stateBeforeRuntime);
+ctx.chat.pop();
+// Candidate dependency lineage remains enforceable after approval.
+ctx.ConnectionManagerRequestService.sendRequest=async()=>JSON.stringify({...runtimeFinal,records:[runtimeGood,{...runtimeGood,facet:'derived',epistemic:'inference',dependsOn:[1]}]});await cd.canonAnalyze('initialize');await cd.canonAccept();
+const acceptedNew=cd.canonStore().records.slice(-2);ok(acceptedNew[1].dependencies.includes(acceptedNew[0].id),'accepted candidate dependencies become persistent state dependencies');
+const beforeReplay=cd.canonStore().records.length;await cd.canonAnalyze('initialize');await cd.canonAccept();ok(cd.canonStore().records.length===beforeReplay,'repeated accepted analysis reuses identical records and dependency IDs');
+cd.canonStore().records=cd.canonStore().records.filter(r=>r.id!==acceptedNew[0].id);ok(!cd.canonValid(acceptedNew[1],await cd.canonEnvironment()),'retiring a newly accepted parent invalidates the dependent record');
+ctx.chatMetadata.continuityCopilot.campaignLedger.narrative=structuredClone(stateBeforeRuntime);
+let lastBadCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{lastBadCalls++;return JSON.stringify(lastBadCalls<=6?{tool:'statesearch',value:{query:'wager'}}:lastBadCalls===7?runtimeFinal:{repairs:[{index:2,record:runtimeBad}]});};await cd.canonAnalyze('initialize');
+ok(lastBadCalls===9&&cd.getCanonPending()?.incomplete&&cd.getCanonPending().records.length===1,'validation failure on the final permitted repair preserves only independent partial results');
+// Native schema on a known ST chat profile; unsupported schema falls back only within the reserved budget.
+ctx.ConnectionManagerRequestService.getProfile=()=>({});ctx.ConnectionManagerRequestService.validateProfile=()=>({selected:'openai',source:'openai'});
+let schemaCalls=0;const schemaRequests=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m,_t,_o,payload)=>{schemaCalls++;schemaRequests.push(payload);if(schemaCalls<=6)return JSON.stringify({tool:'statesearch',value:{query:'wager'}});if(schemaCalls===7)throw new Error('response_format json_schema unsupported');if(schemaCalls===8)return JSON.stringify(runtimeFinal);return JSON.stringify({repairs:[{index:2,record:schemaCalls===9?runtimeBad:runtimeFixed}]});};
+await cd.canonAnalyze('initialize');recovered=cd.getCanonPending();
+ok(schemaCalls===10&&schemaRequests[6].json_schema?.name==='canon_analysis'&&!schemaRequests[7].json_schema&&recovered?.counts.synthesis===2&&recovered.counts.repair===2&&!recovered.incomplete,'supported native schema is attempted; unsupported option fallback and final-call repair are counted within ten calls');
+// A supporting provider also receives the targeted patch schema.
+schemaCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,_t,_o,payload)=>{schemaCalls++;if(schemaCalls===1)return JSON.stringify(runtimeFinal);ok(payload.json_schema?.name==='canon_repairs','supported provider receives targeted record-repair schema');return JSON.stringify({repairs:[{index:2,record:runtimeFixed}]});};await cd.canonAnalyze('initialize');
+ok(cd.getCanonPending()?.records.length===2,'structured repair result still passes local evidence and causal validation');
+ctx.ConnectionManagerRequestService.validateProfile=()=>({selected:'openai',source:'custom'});
+let customCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async(_p,_m,_t,_o,payload)=>{customCalls++;ok(!payload.json_schema,'unknown/custom provider keeps prompt-only JSON compatibility');return JSON.stringify(customCalls===1?runtimeFinal:{repairs:[{index:2,record:runtimeFixed}]});};await cd.canonAnalyze('initialize');
+delete ctx.ConnectionManagerRequestService.getProfile;delete ctx.ConnectionManagerRequestService.validateProfile;
+let overBudgetRequests=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{overBudgetRequests++;return '{}';};let overBudgetBlocked=false;
+try{await cd.callLLM([{role:'user',content:'test'}],null,100,{phase:'repair',calls:2,counts:{repair:2}});}catch{overBudgetBlocked=true;}
+ok(overBudgetBlocked&&overBudgetRequests===0,'transport guard refuses attempts after the repair budget before sending a request');
+// Tool-shaped repair responses cannot restart retrieval or erase retained valid records.
+let toolRepairCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{toolRepairCalls++;return JSON.stringify(toolRepairCalls===1?runtimeFinal:{tool:'chatfetch',value:[4]});};await cd.canonAnalyze('initialize');
+ok(toolRepairCalls===3&&cd.getCanonPending()?.incomplete&&cd.getCanonPending().records.length===1,'retrieval requests during repair are rejected with bounded partial salvage');
+let onlyBadCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{onlyBadCalls++;return JSON.stringify(onlyBadCalls===1?{...runtimeFinal,records:[runtimeBad]}:{repairs:[]});};await cd.canonAnalyze('initialize');
+ok(onlyBadCalls===3&&!cd.getCanonPending()&&cd.getCanonDiagnostics().some(x=>x.issues.some(d=>d.field==='classification')),'unrepairable analysis with no valid records fails visibly and retains field diagnostics');
+let driftCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{driftCalls++;if(driftCalls===1)return JSON.stringify(runtimeFinal);ctx.chat[7].mes+=' SOURCE_CHANGED';return JSON.stringify({repairs:[]});};await cd.canonAnalyze('initialize');
+ok(!cd.getCanonPending(),'source drift during repair discards partial results rather than bypassing freshness');ctx.chat[7].mes=ctx.chat[7].mes.replace(' SOURCE_CHANGED','');
+ctx.chatMetadata.continuityCopilot.campaignLedger.narrative=structuredClone(stateBeforeRuntime);
+
 let stopCalls=0;ctx.ConnectionManagerRequestService.sendRequest=async()=>{stopCalls++;clickFresh('chatassist_stop');return JSON.stringify({tool:'chatfetch',value:[4]});};await cd.canonAnalyze('stage');
 ok(stopCalls===1&&!cd.getCanonPending(),'Stop survives tool boundaries and prevents another Canon Director call');
 ctx.ConnectionManagerRequestService.sendRequest=async()=>{ctx.chatId='switch-during-model';ctx.chatMetadata={note_prompt:''};return JSON.stringify(finalValue);};await cd.canonAnalyze('stage');
