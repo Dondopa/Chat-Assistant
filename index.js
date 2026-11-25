@@ -2572,8 +2572,10 @@
             const onAbort = () => finish(reject, new Error('stopped'));
             if (secs) {
                 tm = setTimeout(() => {
+                    const error = new Error(label + ' \u2014 no response after ' + secs + 's; request aborted. Check provider latency or the configured LLM stall timeout.');
+                    error.name = 'TimeoutError'; error.code = 'ETIMEDOUT';
+                    finish(reject, error);
                     try { ac?.abort(); } catch (e) { /* ignore */ }
-                    finish(reject, new Error(label + ' \u2014 no response after ' + secs + 's; the request was aborted so the extension is not wedged. Raise "LLM stall timeout" in settings for very slow models, or 0 to disable.'));
                 }, secs * 1000);
             }
             if (ac?.signal) {
@@ -2598,7 +2600,14 @@
         if (stopRequested) return '';
         try { abortCtl = new AbortController(); } catch (e) { abortCtl = null; }
 
-        const countSupervision = () => { if (supervision) { const phase=supervision.phase; if (!Object.hasOwn(CANON_CALL_LIMITS,phase) || supervision.counts[phase]>=CANON_CALL_LIMITS[phase]) throw new Error('Canon Director '+phase+' call budget exhausted.'); supervision.counts[phase]++; supervision.calls++; } };
+        const countSupervision = () => { if (supervision) { const phase=supervision.phase; if (!Object.hasOwn(CANON_CALL_LIMITS,phase) || supervision.counts[phase]>=CANON_CALL_LIMITS[phase]) throw new Error('Canon Director '+phase+' call budget exhausted.'); supervision.counts[phase]++; supervision.calls++; supervision.request={...supervision.request,...canonRequestMetrics(messages,maxTok,supervision),requestSent:true}; } };
+        const normalizeReply = res => {
+            try { return normalizeGeneration(res,generationMeta); }
+            catch(error) {
+                if (!supervision) throw error;
+                throw canonFailure(error,supervision,'provider_generation',res?.error);
+            }
+        };
         if (pid && c.ConnectionManagerRequestService?.sendRequest) {
             // Canon supervision requires complete structured JSON and counts each
             // transport attempt. Other workflows retain their streaming behavior.
@@ -2659,10 +2668,10 @@
             try {
                 countSupervision();
                 const res = await raceTransport(c.ConnectionManagerRequestService.sendRequest(pid, messages, maxTok, { signal: abortCtl?.signal, extractData: false }, supervision?.schema ? {json_schema:supervision.schema} : {}), 'request');
-                return normalizeGeneration(res, generationMeta);
+                return normalizeReply(res);
             } catch (se) {
                 if (stopRequested) return '';
-                throw se;
+                throw supervision ? canonFailure(se,supervision,'transport') : se;
             }
         }
 
@@ -2680,10 +2689,10 @@
                 const generate = c.generateRawData || c.generateRaw;
                 countSupervision();
                 const res = await raceTransport(generate.call(c, { prompt: convo, systemPrompt: sys, responseLength: maxTok, trimNames: false }), 'request (fallback backend)');
-                return normalizeGeneration(res, generationMeta);
+                return normalizeReply(res);
             } catch (se) {
                 if (stopRequested) return '';
-                throw se;
+                throw supervision ? canonFailure(se,supervision,'transport') : se;
             } finally {
                 usingFallbackGen = false;
             }
@@ -4714,8 +4723,95 @@
         const d=issues[0],e=new Error((d.recordIndex?'Record '+d.recordIndex+' ('+d.kind+' / '+d.subject+' / '+d.facet+')':'Final output')+': '+d.field+' '+d.status+'. '+d.reason);
         e.diagnostics=issues;return e;
     }
-    function canonReport(issues,run) {
-        canonDiagnostics.push({calls:run?.calls||0,counts:{...run?.counts},issues});
+    // Never inspect/stringify request configs, headers, response bodies or profile objects.
+    // Hosts frequently wrap errors in `cause`; only known scalar diagnostic fields are read.
+    function canonProviderText(value) {
+        let text=typeof value==='string'?value:'';
+        text=text.replace(/https?:\/\/[^\s<>"']+/gi,'[URL omitted]')
+            .replace(/\b(?:bearer|basic)\s+[^\s,;"']+/gi,'[REDACTED authorization]')
+            .replace(/(["']?(?:authorization|proxy_authorization|api[_ -]?key|x-api-key|password|secret|access[_ -]?token|token)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1[REDACTED]')
+            .replace(/((?:api[_ -]?key|token|secret)\s+(?:provided|supplied|is|was)\s*[:=]?\s*)[^\s,;"']+/gi,'$1[REDACTED]')
+            .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/g,'[REDACTED]')
+            .replace(/\b[A-Za-z0-9_+=/-]{28,}\b/g,'[opaque value omitted]')
+            .replace(/\b(headers|request_body|payload|request_config)\s*[:=][\s\S]*/gi,'$1=[omitted]')
+            .replace(/[\x00-\x1f]/g,' ');
+        return text.length>700?text.slice(0,700)+'… [clipped]':text;
+    }
+    function canonProviderError(error,extra) {
+        const seen=new Set(),messages=[],codes=[];let status=null;
+        const visit=e=>{
+            if(!e||seen.has(e)||seen.size>=8)return;seen.add(e);
+            if(typeof e==='string'){const text=canonProviderText(e);if(text)messages.push(text);return;}
+            if(typeof e.message==='string'){const text=canonProviderText(e.message);if(text&&!messages.includes(text))messages.push(text);}
+            for(const code of [e.name,e.code,e.type])if(typeof code==='string')codes.push(code.slice(0,100));
+            for(const n of [e.status,e.statusCode,e.response?.status])if(status===null&&Number.isInteger(Number(n))&&Number(n)>=400&&Number(n)<=599)status=Number(n);
+            visit(e.cause);visit(e.error);visit(e.response?.data?.error); // No arbitrary traversal of provider/request objects.
+        };
+        visit(error);visit(extra);
+        const message=messages.join(' → ').slice(0,1400)||'Provider did not expose an error message.',text=message+' '+codes.join(' ');
+        if(status===null){const m=text.match(/(?:HTTP|response status|status(?: code)?)\s*[:=]?\s*([45]\d{2})\b/i);if(m)status=Number(m[1]);}
+        let category='unknown';
+        if(/timeout|timed.?out|ETIMEDOUT|no response after/i.test(text))category='timeout';
+        else if(/abort|cancel|^stopped$/i.test(text))category='cancelled';
+        else if(status===401||status===403||/unauthori[sz]ed|invalid.*(?:api.?key|credentials)|authentication/i.test(text))category='authentication';
+        else if(status===429||/rate.limit|quota|insufficient.balance/i.test(text))category='rate_limit_or_quota';
+        else if(/context.{0,40}(?:length|window|limit)|too many (?:input )?tokens|prompt.{0,20}too (?:long|large)/i.test(text))category='context_limit';
+        else if(/max[_ -]?(?:output|completion)?[_ -]?tokens|output.{0,20}(?:limit|budget|length)/i.test(text)&&/exceed|limit|maximum|too|invalid|length/i.test(text))category='output_limit';
+        else if(/unsupported|not.support|unknown (?:parameter|field)|invalid (?:parameter|argument)|response.?format|json.?schema/i.test(text))category='unsupported_parameter';
+        else if(/content.filter|safety|blocked|refusal/i.test(text))category='safety';
+        else if(/failed to fetch|network|ECONN|ENOTFOUND|fetch failed/i.test(text))category='network';
+        else if(status>=500)category='provider_server_error';
+        else if(status>=400)category='provider_rejection';
+        return {httpStatus:status,category,providerMessage:message};
+    }
+    function canonConnectionCapacity() {
+        const c=ctx(),positive=n=>Number.isFinite(Number(n))&&Number(n)>=256?Math.floor(Number(n)):null;
+        try {
+            if(settings.profileId&&c.ConnectionManagerRequestService?.sendRequest){
+                const service=c.ConnectionManagerRequestService,profile=service.getProfile?.(settings.profileId),api=service.validateProfile?.(profile)?.selected;
+                // Resolve the selected profile's preset, never the unrelated active RP connection's limits.
+                const preset=profile?.preset&&c.getPresetManager?.(api)?.getCompletionPresetByName?.(profile.preset);
+                const context=api==='openai'?positive(preset?.openai_max_context):api==='textgenerationwebui'?positive(preset?.max_length):null;
+                return {contextLimit:context,capacitySource:context?'selected profile preset':'not exposed for selected profile',modelOutputLimit:null};
+            }
+            const context=c.mainApi==='openai'?positive(c.chatCompletionSettings?.openai_max_context):null;
+            return {contextLimit:context,capacitySource:context?'current chat-completion settings':'not exposed for current connection',modelOutputLimit:null};
+        }catch{return {contextLimit:null,capacitySource:'unavailable',modelOutputLimit:null};}
+    }
+    function canonRequestMetrics(messages,maxTokens,run) {
+        const inputCharacters=messages.reduce((n,m)=>n+String(m.content||'').length,0),schemaCharacters=run.schema?JSON.stringify(run.schema).length:0;
+        const estimate=Math.ceil((inputCharacters+schemaCharacters)/4)+4*messages.length;
+        const retrieved={chat:24000-(run.chatBudget??24000),library:24000-(run.library?.remaining??24000),lore:48000-(run.lore?.remaining??48000),state:18000-(run.stateBudget??18000),indexes:6000-(run.indexBudget??6000)};
+        return {phase:run.phase,callNumber:run.calls,messageCount:messages.length,messageRoles:messages.map(m=>['system','user','assistant','tool'].includes(m.role)?m.role:'other'),
+            inputCharacters,systemPromptCharacters:messages.filter(m=>m.role==='system').reduce((n,m)=>n+String(m.content||'').length,0),schemaCharacters,
+            estimatedInputTokens:estimate,tokenEstimateMethod:'characters / 4 + 4 per message; approximate, not the selected model tokenizer',
+            requestedMaxOutputTokens:maxTokens,configuredMaxOutputTokens:numSetting(settings.maxTokens,defaults.maxTokens,256,32768),
+            retrievedContextCharacters:retrieved,retrievedContextTotalCharacters:Object.values(retrieved).reduce((a,b)=>a+b,0),retrievedSizeNote:'served serialized context including labels; not unique source-body bytes',
+            structuredOutputRequested:!!run.schema,streaming:false,timeoutSeconds:numSetting(settings.llmTimeoutSec,300,0,3600),backend:settings.profileId&&ctx().ConnectionManagerRequestService?.sendRequest?'connection profile':'current connection',
+            ...(run.capacity||canonConnectionCapacity())};
+    }
+    function canonOutputBudget(messages,run) {
+        const configured=numSetting(settings.maxTokens,defaults.maxTokens,256,32768);
+        const requested=run.phase==='retrieval'?Math.min(configured,2048):configured;
+        run.capacity=canonConnectionCapacity();
+        const metrics=canonRequestMetrics(messages,requested,run),margin=Math.max(256,Math.ceil(metrics.estimatedInputTokens*0.1));
+        run.request={...metrics,callNumber:run.calls+1,requestSent:false,contextSafetyMarginTokens:margin,reservedSynthesisTokens:configured,estimatedAvailableContextTokens:metrics.contextLimit?Math.max(0,metrics.contextLimit-metrics.estimatedInputTokens-margin):null};
+        // Preserve the full answer budget rather than silently shrinking synthesis or truncating evidence.
+        if(metrics.contextLimit&&metrics.estimatedInputTokens+margin+configured>metrics.contextLimit){
+            const e=new Error('Estimated input plus reserved synthesis output exceeds the selected connection context limit. Narrow the review or adjust the configured context/output limits; no request sent.');
+            e.canonFailureStage='preflight';throw canonFailure(e,run,'preflight');
+        }
+        return requested;
+    }
+    function canonFailure(error,run,stage,extra) {
+        if(error?.execution)return error;
+        const detail={...run.request,...canonProviderError(error,extra),failureStage:error?.canonFailureStage||stage};
+        const e=new Error('Canon '+(detail.phase||run.phase)+' call '+(detail.callNumber??run.calls)+' — '+detail.failureStage+'/'+detail.category+(detail.httpStatus?' (HTTP '+detail.httpStatus+')':'')+': '+detail.providerMessage);
+        e.execution=detail;return e;
+    }
+    function canonReport(issues,run,execution=null) {
+        const request=execution|| (run?.request?{...run.request,failureStage:issues.some(d=>d.field==='JSON')?'response_parsing':'validation'}:null);
+        canonDiagnostics.push({calls:run?.calls||0,counts:{...run?.counts},request,issues});
         canonDiagnostics=canonDiagnostics.slice(-12);canonRenderDiagnostics();
     }
     function canonRenderDiagnostics() {
@@ -4815,7 +4911,7 @@
 Separate observed gameplay, established source facts, inference, expected developments, unconfirmed information and contradictions. A document role is not authority: obey user-configured continuity/source precedence, disclose conflicts rather than silently resolve them. Primary canon, adaptation, custom world lore and player-created characters differ. World Info is custom lore, not automatically primary canon. Never invent a canonical baseline. When sources are insufficient return uncertainty, even if that is the entire result.
 IMPORTANT ABSENCE LAW: not mentioned recently is not absent. Search the full chat for earlier appearances, then fetch hits or verified persistent state before any claim. A local search miss is not proof of absence. Off-screen expectations are never confirmed gameplay. Separate initiator, subsequent decisions, and actual consequences. A canon-compatible improvised encounter is not automatically a divergence; classify a meaningful divergence only with a fetched canonical baseline and an evidenced causal effect. Pending bracket changes are not completed transfers. Dialogue proves statements/agreements, not truth of every NPC assertion. Ignore reasoning/analysis even when mixed into an RP message; do not infer a canonical identity from a player's created character.
 For each active agreement preserve EVERY material condition as a separate agreement record sharing subject, with facet naming the condition: participants, attempts/limits, success/failure stakes, restrictions, acceptance and progress. Consult all negotiating messages. Keep unresolved terms explicitly uncertain; do not silently drop a condition. Persist independent thread facets separately (characters, baseline, last confirmed event/location, expected next, dependencies, divergence, uncertainty). Knowledge records must name WHO knows; director-only knowledge is not NPC/player knowledge. Current narrative stage requires confidence and refs. Existing reviewed records persist unless explicitly retired; add incremental changes, and explicitly retire only superseded facts. A new scene does not erase off-screen history. Check the current cue before proposing a replacement; preserve it if suitable. New cues must be concise, actionable, not predetermined outcomes; preserve encounter conditions, parallel autonomy and knowledge boundaries. Use audience "director" for spoilers, "player" only for player-known information, or a specific NPC name for their knowledge. Human review is still required.
-Return exactly one JSON object per turn. For retrieval: {"tool":"liblist|libsearch|libfetch|wisearch|wifetch|chatsearch|chatfetch|statesearch|stateread","value":...}. Library/lore list/search use {"query":"words","offset":0}; list may omit query. libfetch uses ["id:revision@part"], wifetch ["book#uid@part"]. chatsearch searches ALL history locally; chatfetch [2,"9#2"] fetches 6000-character labelled parts. statesearch uses query/offset; stateread ["state:N-1"]. Search results are UNREAD. Cite only actually fetched refs: chat:2#1, doc:id:revision@1, wi:book#uid@1, state:N-1. Independent bounded budgets: chat 24000, library 24000, lore 48000, state 18000, indices 6000 characters. Up to six retrieval/analysis calls, two reserved synthesis transport attempts and two validation-repair attempts (ten total maximum). Once final synthesis or repair starts, tools are unavailable; use already retrieved evidence and disclose remaining gaps. State limits require focused reviews, not silent truncation.
+Return exactly one JSON object per turn. During retrieval, return one tool request or {"ready":true} when evidence is sufficient; do not emit the final record array yet. Retrieval output is capped at the lesser of 2048 tokens and the configured answer budget. Synthesis and repair use the full configured answer budget. The next synthesis call will request the final schema below. For retrieval: {"tool":"liblist|libsearch|libfetch|wisearch|wifetch|chatsearch|chatfetch|statesearch|stateread","value":...}. Library/lore list/search use {"query":"words","offset":0}; list may omit query. libfetch uses ["id:revision@part"], wifetch ["book#uid@part"]. chatsearch searches ALL history locally; chatfetch [2,"9#2"] fetches 6000-character labelled parts. statesearch uses query/offset; stateread ["state:N-1"]. Search results are UNREAD. Cite only actually fetched refs: chat:2#1, doc:id:revision@1, wi:book#uid@1, state:N-1. Independent bounded budgets: chat 24000, library 24000, lore 48000, state 18000, indices 6000 characters. Up to six retrieval/analysis calls, two reserved synthesis transport attempts and two validation-repair attempts (ten total maximum). Once final synthesis or repair starts, tools are unavailable; use already retrieved evidence and disclose remaining gaps. State limits require focused reviews, not silent truncation.
 Final output schema (generated from validator constants): ${JSON.stringify(canonSchema().value)}
 Valid shape examples (illustrative only; replace example references with actually retrieved evidence): {"records": [{"kind": "encounter", "subject": "Practice bout", "facet": "progress", "text": "The bout remains unresolved.", "epistemic": "observed", "phase": "active", "confidence": "medium", "audience": "player", "provenance": "narration", "refs": ["chat:2#1"], "dependsOn": []}, {"kind": "divergence", "subject": "Practice bout", "facet": "progress", "text": "The bout remains unresolved.", "epistemic": "inference", "phase": "unknown", "confidence": "medium", "audience": "director", "provenance": "narration", "refs": ["chat:2#1"], "dependsOn": [], "classification": "canon_compatible_improvisation", "initiator": "Challenger NPC", "decision": "Player accepted a practice bout.", "consequence": "No completed canonical change is established."}, {"kind": "divergence", "subject": "Practice bout", "facet": "progress", "text": "The bout remains unresolved.", "epistemic": "inference", "phase": "pending", "confidence": "medium", "audience": "director", "provenance": "narration", "refs": ["chat:2#1", "doc:example:revision@1"], "dependsOn": [], "classification": "pending_divergence", "initiator": "Challenger NPC", "decision": "Player accepted a practice bout.", "consequence": "No completed canonical change is established."}, {"kind": "divergence", "subject": "Practice bout", "facet": "progress", "text": "The bout remains unresolved.", "epistemic": "inference", "phase": "unknown", "confidence": "medium", "audience": "director", "provenance": "narration", "refs": ["chat:2#1"], "dependsOn": [], "classification": "uncertain", "initiator": "Challenger NPC", "decision": "Player accepted a practice bout.", "consequence": "No completed canonical change is established."}], "retire": [], "summary": "The bout is unresolved; canonical consequences need evidence.", "cueAssessment": "Preserve player freedom and the unresolved outcome."}
 Every divergence MUST include classification, initiator, decision and consequence. Classifications: ${CANON_CAUSES.join(', ')}. Human-readable capitalization/spaces/hyphens normalize only to exact enum values; unknown concepts are rejected. dependsOn lists 1-based proposed record indexes whose conclusions this record needs, never source citations. Each record still needs its own retrieved evidence. Do not cite another proposed record as evidence. Confirmed consequential divergence requires a fetched baseline AND completed played consequences; do not relabel unsupported claims as confirmed. An uncertain label is not a substitute for evidence. No semantic claim becomes verified merely because JSON/citations validate.`;
@@ -4849,24 +4945,29 @@ Every divergence MUST include classification, initiator, decision and consequenc
                 canonAssert(run);await libraryCheck(run.library);
                 canonStatus('Canon Director · '+phase+' · '+JSON.stringify(run.counts)+' / '+JSON.stringify(CANON_CALL_LIMITS)+' · '+run.calls+' total calls');
                 let raw;
-                try{raw=await callLLM(messages,null,8192,run);}catch(e){
+                try{const outputBudget=canonOutputBudget(messages,run);raw=await callLLM(messages,null,outputBudget,run);}catch(e){
                     // Retry only a recognizably unsupported structured-output option, within this phase's budget.
-                    const reason=String(e?.message||'')+' '+String(e?.cause?.message||'');
+                    const failure=canonFailure(e,run,'transport'),reason=failure.execution.providerMessage;
+                    canonReport([canonIssue(null,null,'generation',failure.execution.category,'successful generation',failure.execution.providerMessage)],run,failure.execution);failure.canonReported=true;
                     if(run.schema&&/json.?schema|response.?format|structured.output/i.test(reason)&&/unsupported|not.support|invalid|unknown/i.test(reason)){
                         run.schemaDisabled=true;canonReport([canonIssue(null,null,'structuredOutput','unsupported','prompt contract with local validation','Provider rejected structured output; bounded prompt-only fallback.')],run);
                         if(run.counts[phase]<CANON_CALL_LIMITS[phase])return ask(phase);
                     }
-                    throw new Error('Generation request failed. Check the connection/provider; no state saved.');
+                    throw failure;
                 }
                 canonAssert(run);await libraryCheck(run.library);
                 const result=splitThinking(raw);
-                if(/length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(result.generation?.finishReason||'')))throw new Error('Incomplete Canon Director generation; nothing accepted.');
+                if(/length|max.*tokens|incomplete|error|stop_requested|user_stop/i.test(String(result.generation?.finishReason||''))){const e=new Error('Incomplete Canon Director generation: finish reason '+canonProviderText(String(result.generation.finishReason))+'. Output not accepted.');e.code=/length|max.*tokens/i.test(String(result.generation.finishReason))?'OUTPUT_LIMIT':'INCOMPLETE_GENERATION';const failure=canonFailure(e,run,'provider_generation');failure.execution.truncatedOutput=/length|max.*tokens/i.test(String(result.generation.finishReason));if(failure.execution.truncatedOutput)failure.execution.category='output_limit';throw failure;}
                 try{return JSON.parse(result.rest.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}
                 catch{throw canonValidationError([canonIssue(null,null,'JSON',result.rest?'malformed':'empty','one complete JSON object','Empty or malformed structured response.')]);}
             };
             let value=null,proposal=null;
             while(run.counts.retrieval<CANON_CALL_LIMITS.retrieval){
-                try{value=await ask('retrieval');}catch(e){if(!e.diagnostics)throw e;canonReport(e.diagnostics,run);break;}
+                try{value=await ask('retrieval');}catch(e){
+                    if(e.execution?.truncatedOutput===true){canonReport([canonIssue(null,null,'retrievalOutput','incomplete','tool request or ready marker','Truncated retrieval output discarded; proceeding to reserved synthesis.')],run,e.execution);break;}
+                    if(!e.diagnostics)throw e;canonReport(e.diagnostics,run);break;
+                }
+                if(value?.ready===true){value=null;break;}
                 if(!value?.tool)break;
                 const output=await canonTool(run,value.tool,value.value);
                 messages.push({role:'assistant',content:JSON.stringify(value)},{role:'user',content:output});value=null;
@@ -4891,14 +4992,14 @@ Every divergence MUST include classification, initiator, decision and consequenc
                 const affected=[...new Set(proposal.rejected.map(d=>d.recordIndex))];
                 messages.push({role:'user',content:JSON.stringify({task:'Repair only these rejected records. Valid records are frozen. Do not repeat retrieval. Use existing evidence only. Return {"repairs":[{"index":2,"record":{complete replacement record}}]}. Omit an index if it cannot be supported. Do not invent evidence or reinterpret an unknown classification as a confirmed claim.',diagnostics:proposal.rejected,candidates:affected.map(index=>({index,record:value.records[index-1]}))})});
                 run.fullRepair=false;
-                try{value=canonRepair(value,await ask('repair'),proposal);}catch(e){canonAssert(run);await libraryCheck(run.library);canonReport(e.diagnostics||[canonIssue(null,null,'repair','failed','complete replacement records',canonSafe(e.message))],run);if(!e.diagnostics)break;}
+                try{value=canonRepair(value,await ask('repair'),proposal);}catch(e){canonAssert(run);await libraryCheck(run.library);if(!e.canonReported)canonReport(e.diagnostics||[canonIssue(null,null,'repair','failed','complete replacement records',canonProviderText(e.message))],run,e.execution);if(!e.diagnostics)break;}
             }
             const current=await canonEnvironment();canonAssert(run);await libraryCheck(run.library);
             if(proposal.records.some(r=>!canonValid(r,current)))throw new Error('Sources changed; rerun the analysis.');
             if(proposal.incomplete&&!proposal.records.length)throw new Error('Validation repair budget exhausted; no independently valid records. See run diagnostics. Nothing saved.');
             canonViewEnv=current;canonPending={...proposal,calls:run.calls,counts:{...run.counts},run};canonRender();
             canonStatus((proposal.incomplete?'INCOMPLETE analysis ready for review; rejected records and all retirements withheld':'Analysis ready for review')+' · '+run.calls+' model calls '+JSON.stringify(run.counts)+'. No narrative state or Author’s Note changed.');
-        }catch(e){if(sameChat(chat)){if(e.diagnostics)canonReport(e.diagnostics,run);else canonReport([canonIssue(null,null,'run','failed','successful validation and fresh sources',canonSafe(e.message))],run);canonStatus('Canon Director failed: '+canonSafe(e.message)+(run?' ('+run.calls+' calls)':''));toast(canonSafe(e.message),'error');}}
+        }catch(e){if(sameChat(chat)){if(e.diagnostics)canonReport(e.diagnostics,run);else if(!e.canonReported)canonReport([canonIssue(null,null,'run','failed','successful validation and fresh sources',canonProviderText(e.message))],run,e.execution);canonStatus('Canon Director failed: '+canonSafe(e.message)+(run?' ('+run.calls+' calls)':''));toast(canonSafe(e.message),'error');}}
         finally{running=false;setBusy(false);}
     }
     async function canonPersist(next,chat,base) {
