@@ -18,7 +18,7 @@
  * Exit code 0 = safe to ship. Non-zero = DO NOT PUSH.
  */
 import { mkdtempSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, webcrypto } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -190,7 +190,7 @@ process.on('unhandledRejection', (e) => {
 });
 
 const dir = mkdtempSync(join(tmpdir(), 'ca-load-'));
-writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
+writeFileSync(join(dir, 'index.js'), SRC.replace('    // Fallback in case APP_READY', '    globalThis.__campaignTest = { librarySHA256, libraryCatalog, libraryCommit, libraryParseFile, libraryRun, libraryTool, libraryCheck, librarySelect, librarySelection, libraryText, libraryRequest, libraryMark, historyForLLM, attachmentParse, attachmentUpload, attachmentRun, attachmentClear, attachmentCatalog, attachmentFetch, attachmentSearch, attachmentRequest, campaignAudit, campaignStore, campaignSelect, campaignParse, campaignNonRP, campaignBatch, campaignReview, campaignValid, campaignFingerprint, campaignSourceText, campaignRender, ingestProposals, pendingNoteCards: () => pendingEdits.filter(e => e.kind === "mem" && anIsNoteEdit(e)).length, anRead, anParse, anLegacyParse, anPropose, anApply, anCancel, anPendingProposal: () => anPending, gatherMemory, rippleScan };\n    // Fallback in case APP_READY'));
 writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
 
 console.log('== module integrity ==');
@@ -2978,6 +2978,155 @@ ok(await rejectsFile(fileOf('fake.pdf','not pdf'), /header/),'fake PDF rejected 
 window.pdfjsLib=oldPdf;
 docs.attachmentClear();
 }
+
+
+console.log('== v2.89 persistent Document Library ==');
+if(!globalThis.crypto)globalThis.crypto=webcrypto;
+const lib=globalThis.__campaignTest, oldFetch=globalThis.fetch;
+for(const sample of ['', 'abc', 'a'.repeat(55), 'b'.repeat(56), 'c'.repeat(64), 'Unicode 🌍\r\n'.repeat(1000)])ok(lib.librarySHA256(new TextEncoder().encode(sample))===createHash('sha256').update(sample).digest('hex'),'HTTP LAN SHA-256 fallback matches Node crypto across padding boundaries and Unicode');
+
+const fileStore=new Map(), fileReads=[], fileWrites=[];let failUpload=false, failCatalog=false, corruptRead=false;
+ctx.getRequestHeaders=()=>({'Content-Type':'application/json','X-CSRF-Token':'test'});
+const answer=(status,text)=>({ok:status>=200&&status<300,status,text:async()=>text,arrayBuffer:async()=>new TextEncoder().encode(text).buffer,json:async()=>JSON.parse(text)});
+globalThis.fetch=async(url,options={})=>{
+ if(url==='/api/files/upload'){
+  const {name,data}=JSON.parse(options.body);fileWrites.push(name);
+  if(failUpload||failCatalog&&name==='ca-library-catalog.json')return answer(500,'failed');
+  fileStore.set('/user/files/'+name,Buffer.from(data,'base64').toString('utf8'));
+  return answer(200,JSON.stringify({path:'user/files/'+name}));
+ }
+ if(url==='/api/files/delete'){fileStore.delete('/'+JSON.parse(options.body).path);return answer(200,'ok');}
+ fileReads.push(url);
+ return fileStore.has(url)?answer(200,corruptRead&&!url.endsWith('catalog.json')?'corrupted':fileStore.get(url)):answer(404,'missing');
+};
+ctx.chatId='library-A';ctx.chatMetadata={};ctx.chat=[{name:'Narrator',mes:'At the university.'}];
+CA.wiDiscovery=false;CA.streaming=false;CA.directorMode='off';CA.critiqueAuto=0;CA.profileId='gate-profile';
+let selectionDisk={};ctx.saveMetadata=async()=>{selectionDisk=structuredClone(ctx.chatMetadata);};
+const libChat=()=>({id:ctx.chatId,md:ctx.chatMetadata});
+const info=title=>({title,description:'Reference description',tags:['manual'],role:'reference'});
+const original='\uFEFFFirst line\r\n'+ 'Complete prose — ü 🌍. '.repeat(800)+'\nLIBRARY_TAIL_SENTINEL';
+let doc=await lib.libraryCommit({...info('Manual'),text:original});
+const hidden=await lib.libraryCommit({...info('UNSELECTED_PRIVATE_TITLE'),text:'UNSELECTED_PRIVATE_BODY'});
+ok((await lib.libraryCatalog()).documents.length===2&&await lib.libraryText(doc)===original,'native file upload/read-back preserves full Unicode, BOM, line endings and tail');
+ok(!JSON.stringify(ctx.chatMetadata).includes('Complete prose'),'document bodies stay out of chat metadata');
+ok((await lib.libraryRun(libChat())).docs.length===0,'new chat selects no library documents');
+await lib.librarySelect(doc.id,true,libChat());ctx.chatMetadata=structuredClone(selectionDisk);
+ok(lib.librarySelection()[0]===doc.id,'native metadata save persists selection independently of document bodies');
+let libRun=await lib.libraryRun(libChat());fileReads.length=0;
+const listed=await lib.libraryTool(libRun,{tag:'liblist',value:{offset:0}});
+ok(listed.includes('Manual')&&!listed.includes('Complete prose')&&!listed.includes('UNSELECTED'),'selected list is metadata-only and excludes unselected titles and text');
+const searched=await lib.libraryTool(libRun,{tag:'libsearch',value:{query:'LIBRARY_TAIL_SENTINEL'}});
+ok(searched.includes('@'+Math.ceil(original.length/6000))&&!searched.includes('UNSELECTED')&&!fileReads.includes('/user/files/'+hidden.file),'local search finds late parts and never opens unselected bodies');
+let reconstructed='';
+for(let part=1;part<=Math.ceil(original.length/6000);part++){
+ const result=await lib.libraryTool(await lib.libraryRun(libChat()),{tag:'libfetch',value:[doc.id+':'+doc.revision+'@'+part]});
+ const row=JSON.parse(result.split('\n').slice(1).join('\n')).results[0];
+ reconstructed+=row.text;
+ ok(row.title==='Manual'&&row.revision===doc.revision&&row.start===(part-1)*6000&&row.coverage.includes('INCOMPLETE'),'part identifies title, revision, original offsets and incomplete coverage');
+}
+ok(reconstructed===original,'all document parts reconstruct the complete original without silent truncation');
+let boundedRun=await lib.libraryRun(libChat()),totalResponse=0;
+for(let i=0;i<12;i++){const out=await lib.libraryTool(boundedRun,{tag:'libfetch',value:[doc.id+':'+doc.revision+'@1']});if(!out.startsWith('[LIBRARY LIMIT]'))totalResponse+=out.length;}
+ok(totalResponse<=24000&&boundedRun.remaining<6500,'serialized library payload has a hard per-request budget');
+const tooMany=await lib.libraryTool(await lib.libraryRun(libChat()),{tag:'libfetch',value:Array.from({length:6},()=>doc.id+':'+doc.revision+'@1')});
+ok(tooMany.includes('NOT SERVED')&&tooMany.includes('notServedRefs'),'over-cap fetches explicitly report unserved references');
+const denied=await lib.libraryTool(await lib.libraryRun(libChat()),{tag:'libfetch',value:[hidden.id+':'+hidden.revision+'@1']});
+ok(denied.includes('NOT SERVED')&&!denied.includes('UNSELECTED_PRIVATE_BODY'),'guessed unselected refs cannot reveal content');
+const beforeFiles=JSON.stringify([...fileStore]);failUpload=true;let rejected=false;
+try{await lib.libraryCommit({...info('Failed import'),text:'not saved'});}catch{rejected=true;}failUpload=false;
+ok(rejected&&JSON.stringify([...fileStore])===beforeFiles,'failed body upload leaves existing library and documents unchanged');
+corruptRead=true;rejected=false;const catalogBeforeMismatch=fileStore.get('/user/files/ca-library-catalog.json');
+try{await lib.libraryCommit({...info('Unverified upload'),text:'expected bytes'});}catch{rejected=true;}corruptRead=false;
+ok(rejected&&fileStore.get('/user/files/ca-library-catalog.json')===catalogBeforeMismatch,'upload read-back mismatch cannot publish an unverified document');
+const oldDoc=doc;libRun=await lib.libraryRun(libChat());failCatalog=true;rejected=false;
+try{await lib.libraryCommit({...info('Manual'),id:doc.id,expectedRevision:doc.revision,text:'bad replacement'});}catch{rejected=true;}failCatalog=false;
+ok(rejected&&(await lib.libraryCatalog()).documents.find(d=>d.id===doc.id).revision===doc.revision&&await lib.libraryText(doc)===original,'failed catalog commit preserves original revision and full text');
+doc=await lib.libraryCommit({...info('Renamed manual'),id:doc.id,expectedRevision:doc.revision});
+ok(doc.number===2&&doc.imported===oldDoc.imported&&await lib.libraryText(doc)===original,'rename/details increment revision and preserve import date and body');
+rejected=false;try{await lib.libraryTool(libRun,{tag:'libfetch',value:[oldDoc.id+':'+oldDoc.revision+'@1']});}catch{rejected=true;}
+ok(rejected,'revision changes invalidate already-open retrieval runs');
+const oldRef=doc.id+':'+doc.revision+'@1';doc=await lib.libraryCommit({...info('Renamed manual'),id:doc.id,expectedRevision:doc.revision,text:'NEW_DOCUMENT_BODY'});
+const oldFetchResult=await lib.libraryTool(await lib.libraryRun(libChat()),{tag:'libfetch',value:[oldRef]});
+ok(oldFetchResult.includes('NOT SERVED')&&await lib.libraryText(doc)==='NEW_DOCUMENT_BODY','replacement makes old refs stale and new authoritative text available');
+rejected=false;try{await lib.libraryCommit({...info('stale overwrite'),id:doc.id,expectedRevision:oldDoc.revision,text:'wrong'});}catch{rejected=true;}
+ok(rejected&&await lib.libraryText(doc)==='NEW_DOCUMENT_BODY','stale management form cannot overwrite a newer revision');
+corruptRead=true;rejected=false;try{await lib.libraryText(doc);}catch{rejected=true;}corruptRead=false;
+ok(rejected,'hash/length verification rejects corrupted server text');
+for(const text of ['<libwrite>{}</libwrite>','<libfetch>[]</libfetch>','<libsearch>{"query":"x","offset":-1}</libsearch>','<liblist>{}</liblist><memedits>[]</memedits>','<libfetch>["a"]','<libsearch>'+JSON.stringify({query:'x'.repeat(501)})+'</libsearch>'])ok(!!lib.libraryRequest(text)?.error,'malformed/mixed/mutation library operation rejected');
+const utf8File={name:'manual.md',size:Buffer.byteLength(original),arrayBuffer:async()=>new TextEncoder().encode(original).buffer};
+ok(await lib.libraryParseFile(utf8File)===original,'UTF-8 file import preserves BOM and original text');
+for(const f of [{...utf8File,name:'manual.pdf'},{...utf8File,size:11*1024*1024},{...utf8File,arrayBuffer:async()=>new Uint8Array([255]).buffer}]){rejected=false;try{await lib.libraryParseFile(f);}catch{rejected=true;}ok(rejected,'unsupported, oversized or malformed UTF-8 file is refused without partial import');}
+libRun=await lib.libraryRun(libChat());await lib.librarySelect(doc.id,false,libChat());rejected=false;try{await lib.libraryCheck(libRun);}catch{rejected=true;}
+ok(rejected,'deselecting documents invalidates in-flight retrieval');
+await lib.librarySelect(doc.id,true,libChat());libRun=await lib.libraryRun(libChat());ctx.chatId='library-B';ctx.chatMetadata={};rejected=false;try{await lib.libraryCheck(libRun);}catch{rejected=true;}
+ok(rejected&&(await lib.libraryRun(libChat())).docs.length===0,'switching chats never carries document selection or retrieval into the destination');
+// Switch while the native body request is pending, not merely between tools.
+ctx.chatId='library-A';ctx.chatMetadata={};await lib.librarySelect(doc.id,true,libChat());
+const nativeLibraryFetch=globalThis.fetch;
+libRun=await lib.libraryRun(libChat());
+globalThis.fetch=async(url,options)=>{const response=await nativeLibraryFetch(url,options);if(url==='/user/files/'+doc.file){ctx.chatId='library-C';ctx.chatMetadata={};}return response;};
+rejected=false;try{await lib.libraryTool(libRun,{tag:'libfetch',value:[doc.id+':'+doc.revision+'@1']});}catch{rejected=true;}
+ok(rejected&&!JSON.stringify(ctx.chatMetadata).includes('NEW_DOCUMENT_BODY'),'chat switch during asynchronous body fetch discards source results');
+globalThis.fetch=nativeLibraryFetch;
+// Existing Send path: no body initially, read-only tools, final answer tagged
+// so deselection/replacement cannot replay stale source material from history.
+ctx.chatId='library-A';ctx.chatMetadata={};await lib.librarySelect(doc.id,true,libChat());let libCalls=[];
+ctx.ConnectionManagerRequestService.sendRequest=async(_p,m)=>{libCalls.push(structuredClone(m));return libCalls.length===1?'<libfetch>'+JSON.stringify([doc.id+':'+doc.revision+'@1'])+'</libfetch>':'I read NEW_DOCUMENT_BODY in the selected manual.';};
+const writesBeforeModel=fileWrites.length;
+document.getElementById('chatassist_input').value='Read my selected document.';clickFresh('chatassist_send');await sleep(800);
+ok(libCalls.length===2&&!JSON.stringify(libCalls[0]).includes('NEW_DOCUMENT_BODY')&&JSON.stringify(libCalls[1]).includes('NEW_DOCUMENT_BODY'),'real Send supplies no automatic body, then adds only explicitly fetched selected text');
+ok(fileWrites.length===writesBeforeModel,'model retrieval performs no library writes');
+ctx.ConnectionManagerRequestService.sendRequest=async()=> 'A follow-up still discusses NEW_DOCUMENT_BODY.';
+document.getElementById('chatassist_input').value='Restate that.';clickFresh('chatassist_send');await sleep(800);
+await lib.librarySelect(doc.id,false,libChat());
+ok(!JSON.stringify(lib.historyForLLM(undefined,await lib.libraryRun(libChat()))).includes('NEW_DOCUMENT_BODY'),'deselected document-derived answers are excluded from future model history');
+await lib.librarySelect(doc.id,true,libChat());
+ctx.ConnectionManagerRequestService.sendRequest=async()=>{
+ doc=await lib.libraryCommit({...info('Changed during generation'),id:doc.id,expectedRevision:doc.revision,text:'NEW_REVISION'});
+ return 'STALE_GENERATION_MUST_NOT_PERSIST';
+};
+document.getElementById('chatassist_input').value='Read again.';clickFresh('chatassist_send');await sleep(800);
+ok(!JSON.stringify(ctx.chatMetadata).includes('STALE_GENERATION_MUST_NOT_PERSIST'),'revision change during generation discards stale model answer before history persistence');
+libRun=await lib.libraryRun(libChat());
+await lib.libraryCommit({id:doc.id,expectedRevision:doc.revision,delete:true});rejected=false;try{await lib.libraryCheck(libRun);}catch{rejected=true;}
+ok(rejected&&!(await lib.libraryCatalog()).documents.some(d=>d.id===doc.id),'delete invalidates outstanding reads and removes catalog entry');
+ok(!fileStore.has('/user/files/'+doc.file),'delete removes owned server body after verified catalog commit');
+const catalogPath='/user/files/ca-library-catalog.json', validCatalog=fileStore.get(catalogPath);fileStore.set(catalogPath,'broken');rejected=false;
+try{await lib.libraryCommit({...info('must not overwrite corrupt catalog'),text:'text'});}catch{rejected=true;}
+ok(rejected&&fileStore.get(catalogPath)==='broken','corrupt catalog fails closed rather than silently creating an empty library');fileStore.set(catalogPath,validCatalog);
+const safeCatalog=fileStore.get(catalogPath);
+for(const invalid of [
+ {...JSON.parse(safeCatalog),schema:2},
+ {...JSON.parse(safeCatalog),documents:[{...hidden,file:'../foreign.txt'}]},
+ {...JSON.parse(safeCatalog),documents:[{...hidden,role:'canon'}]},
+ {...JSON.parse(safeCatalog),documents:[hidden,hidden]},
+]){fileStore.set(catalogPath,JSON.stringify(invalid));rejected=false;try{await lib.libraryCatalog();}catch{rejected=true;}ok(rejected,'invalid catalog schema, foreign path, role or duplicate ID fails closed');}
+fileStore.set(catalogPath,safeCatalog);
+const fullCatalog={schema:1,version:crypto.randomUUID(),documents:Array.from({length:200},()=>{const id=crypto.randomUUID();return {...hidden,id,file:'ca-library-'+id+'-'+hidden.revision+'.txt'};})};
+fileStore.set(catalogPath,JSON.stringify(fullCatalog));rejected=false;
+try{await lib.libraryCommit({...info('Over limit'),text:'body'});}catch{rejected=true;}
+ok(rejected&&(await lib.libraryCatalog()).documents.length===200,'full library refuses new documents without changing existing catalog');
+fileStore.set(catalogPath,safeCatalog);
+for(const bad of [ {...info(''),text:'text'}, {...info('bad'),role:'canon',text:'text'}, {...info('bad'),text:''}, {...info('bad'),text:'x\0y'}, {...info('bad'),text:'\ud800'}, {...info('bad'),text:'x'.repeat(10*1024*1024+1)} ]){
+ rejected=false;try{await lib.libraryCommit(bad);}catch{rejected=true;}
+ ok(rejected&&fileStore.get(catalogPath)===safeCatalog,'invalid document details/text/size cannot modify the existing catalog');
+}
+ctx.chatId='selection-save';ctx.chatMetadata={};ctx.saveMetadata=async()=>{throw new Error('metadata save failed')};rejected=false;
+try{await lib.librarySelect(hidden.id,true,libChat());}catch{rejected=true;}
+ok(rejected&&lib.librarySelection().length===0,'failed chat selection save rolls back and reports failure');
+ctx.saveMetadata=async()=>{};
+ctx.chatMetadata.continuityCopilot.librarySelection=Array.from({length:20},(_,i)=>'id'+i);rejected=false;
+try{await lib.librarySelect(hidden.id,true,libChat());}catch{rejected=true;}
+ok(rejected&&lib.librarySelection().length===20,'per-chat selection limit rejects excess rather than injecting an unbounded catalog');
+// Simulate another writer changing catalog between staged body and commit.
+ctx.chatMetadata={};let raced=false;globalThis.fetch=async(url,options={})=>{
+ const result=await nativeLibraryFetch(url,options);
+ if(url==='/api/files/upload'&&!JSON.parse(options.body).name.endsWith('catalog.json')&&!raced){raced=true;const c=JSON.parse(fileStore.get(catalogPath));c.version=crypto.randomUUID();fileStore.set(catalogPath,JSON.stringify(c));}
+ return result;
+};rejected=false;try{await lib.libraryCommit({...info('Concurrent import'),text:'race body'});}catch{rejected=true;}
+ok(rejected&&!(await lib.libraryCatalog()).documents.some(d=>d.title==='Concurrent import'),'detected concurrent catalog change refuses to overwrite another writer');
+globalThis.fetch=nativeLibraryFetch;
+globalThis.fetch=oldFetch;ctx.chatMetadata={};ctx.chat=[];
 
 console.log('');
 console.log('RESULT: ' + pass + ' passed, ' + fail + ' failed');
