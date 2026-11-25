@@ -4,6 +4,96 @@ A floating AI panel inside SillyTavern where you talk to a **second "assistant" 
 
 > Formerly "Continuity Copilot." Inspired by the concept of **ST-Copilot** (MIT, github.com/Supker/St-Copilot), but the code here is original and the scope has grown far past a chat manager: this is a continuity auditor, co-writer, and editor in one.
 
+## v2.89.0-preview.2 — Grounded retrieval and picker-free import
+
+On `feature/persistent-document-library`, based on `d5281fe`. Main and the Canon
+Director branch are unchanged. This branch does not contain Canon Director.
+
+**Confirmed defects:** the selected Library previously added tool instructions
+but no source text to the first model request. Search required every whitespace
+word to match and returned identifiers without useful excerpts. Fixed 6000-char
+parts ignored narrative boundaries. Successful selection therefore did not
+establish that the model read any evidence. The reported live answer itself
+cannot be replayed without the original provider response/documents; these
+implementation defects were reproduced with synthetic sources.
+
+Ordinary assistant requests now perform bounded automatic retrieval using the
+question, recent RPG chapter/volume references and entity candidates. Lexical
+ranking combines normalized partial term matches, frequency/length weighting,
+quoted phrases, metadata/headings and conservative single-character spelling
+tolerance. Explicit chapter/volume matches take priority. Missing scene anchors
+are disclosed before broader fallback evidence. Simple greetings and some
+clearly unrelated requests skip retrieval. Intent/entity extraction is heuristic,
+not semantic understanding; unfamiliar wording can still need follow-up search.
+
+Lorebook Discovery is the benchmark: both adapters share normalized query terms
+and heading/body relevance scoring. Lore retains its rarity weighting, aliases,
+active-book eligibility, disabled-entry exclusion, bounded `wisearch`/`wifetch`
+and existing recovery behavior. Documents add frequency/length, phrase and typo
+signals plus continuous-text structure. A common automatic coordinator obtains
+small relevant lore passages and earlier RPG passages alongside document results;
+it uses the existing `fullTextOf` formatter and marks long chat parts incomplete.
+Story Memory and recent chat remain in the existing context assembly. Sources
+retain separate citations and authority; earlier dialogue is evidence of a
+statement, not necessarily an objective fact. Chat-source changes are checked
+again before transport. This is a shared retrieval coordinator with source
+adapters, not a semantic database or world simulation.
+
+Markdown/plain-text headings, chapters, volumes, paragraphs and separators define
+original-offset passages. Oversized passages overlap within a section. New
+references use `id:revision@sN`; existing `@N` references retain their fixed-part
+meaning. Existing documents need no reimport. Search returns ranked excerpts;
+fetch returns authoritative original text with title, revision, heading, offsets
+and partial coverage. Only selected revisions can be read. Indexing reads one
+document at a time, never retains full collections, and has a structural safety
+limit; very fragmented documents may need splitting.
+
+Source role **canon** marks factual source authority, separate from instruction
+trust. Source text remains user-role data under instructions forbidding execution
+of embedded commands. Source facts, played continuity and divergence must remain
+distinct. No sources or RP are edited automatically. Instruction boundaries and
+citation checks are safeguards, not a proof of semantic truth or complete prompt
+injection immunity.
+
+The Library window exposes an evidence budget in approximate tokens. Available
+context, when exposed by the selected connection, reserves configured output
+and room for instructions, RPG/memory/World Info and conversation already in the
+request. Later tool calls recheck the complete assembled input. Overflow fails
+explicitly instead of silently dropping evidence. Estimates use characters,
+not a provider tokenizer; unknown model limits remain unknown. Library recovery
+keeps the configured output limit. Tool rounds and synthesis remain bounded;
+one citation-repair round fits within the existing round limit. Missing evidence
+or missing citations cannot be stored as a source-grounded answer. A citation
+proves a passage was delivered, not that every generated interpretation is true.
+
+**Retrieval inspector** shows selected revisions, actual queries/ranked hits,
+served passages, origins, budgets and transport attempts. It captures the
+extension's actual submitted messages (and native raw-generation payload for
+that backend), not merely selected documents. Provider-side transformations are
+not observable here. Category estimates group combined RPG/memory/World Info
+blocks; they are not exact tokenizer accounting. Payload display is bounded and
+omissions are marked; it does not trim transmitted evidence. Only the latest run
+and at most 12 payload records are retained in memory. Credentials and URLs are
+redacted, and stale chat/selection/revision inspection is refused.
+
+**No Android picker needed:** paste remains available, and an optional
+[server inbox plugin](server-inbox/README.md) provides per-user folders, paginated
+browsing, single-file/recursive import and allowlisted HTTPS import. Native ST
+file/Data Bank APIs support stored uploads but expose no suitable bounded inbox
+filesystem browser. The plugin adds only read access to the designated inbox;
+imports still use existing Library persistence, verification and selection.
+Browser URL fetching alone is not a reliable substitute because of CORS and
+cannot safely validate remote DNS; URL import therefore uses the optional
+plugin's HTTPS allowlist, pinned public DNS and no-redirect policy.
+
+To test: update this branch, select sources, optionally label canon, set the
+Library evidence budget, and ask a normal question. A one-sentence greeting such
+as “Volume 2 Chapter 3” is sufficient to prioritize that section. Open Retrieval
+inspector to check what the model received. For picker-free import, install the
+optional plugin as documented, place files in the inbox, browse/import, then
+select the documents. Physical Samsung A07, live providers and Termux remain
+unverified. Verification: the mandatory `node load_test.mjs` gate passes **808 tests**, including **57 server-inbox assertions**. Real DOM Library workflows pass at 360, 412 and 1280 pixels; Campaign Ledger visibility passes empty/populated sessions at all three widths; mobile panel checks pass five viewport sizes. Comparative fixtures discover the same fact from lore and Markdown and combine those sources with earlier RP. These tests use controlled model responses, not live-provider accuracy measurements. Thirty deliberate fault injections were independently rejected by the mandatory gate, covering retrieval, grounding, stale sources, budgets, inspector redaction, citation identity and inbox security.
+
 ## v2.89.0-preview.1 — Persistent Document Library (feature branch)
 
 This preview is developed on `feature/persistent-document-library`; it does not
